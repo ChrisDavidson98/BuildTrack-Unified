@@ -87,7 +87,7 @@ const fmtShort= d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{mon
 const daysTo  = d => { if (!d) return null; const t=new Date(); t.setHours(0,0,0,0); return Math.round((new Date(d+'T00:00:00')-t)/86400000); };
 const fmtTime = t => { if (!t) return null; const [h,m]=t.split(':').map(Number); return `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?'PM':'AM'}`; };
 const bonusFor= h => BONUS_DEFS.filter(b => b.requiresBasement ? h.basementFinish : true);
-const eligible= (h,b)=> b.requiresBasement ? h.basementFinish : (!!h.milestones[b.milestoneKey] && daysTo(h.milestones[b.milestoneKey])<=0);
+const eligible= (h,b)=> b.requiresBasement ? (h.basementFinish && !!h.milestones.closing && daysTo(h.milestones.closing)<=0) : (!!h.milestones[b.milestoneKey] && daysTo(h.milestones[b.milestoneKey])<=0);
 
 function icsUri(address, date, time) {
   const dt=date.replace(/-/g,''), st=time.replace(':','')+'00';
@@ -393,7 +393,7 @@ function Detail({ house:h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, on
                 <div style={{...S.bonDot,...(cl?S.bonDotCl:el?S.bonDotEl:{})}} />
                 <div>
                   <div style={S.mName}>{b.label}</div>
-                  <div style={S.mSub}>{b.milestoneKey&&h.milestones[b.milestoneKey]?`Milestone: ${fmtDate(h.milestones[b.milestoneKey])}`:!el&&!b.requiresBasement?'Set milestone date to unlock':''}</div>
+                  <div style={S.mSub}>{b.milestoneKey&&h.milestones[b.milestoneKey]?`Milestone: ${fmtDate(h.milestones[b.milestoneKey])}`:!el&&!b.requiresBasement?'Set milestone date to unlock':!el&&b.requiresBasement?(h.milestones.closing?'Unlocks once closing date passes':'Set closing date to unlock'):''}</div>
                 </div>
               </div>
               <button style={{...S.clBtn,...(cl?S.clDone:el?S.clRdy:S.clLk)}} onClick={()=>el&&onToggleBonus(b.key)} disabled={!el}>{cl?'✓ CLAIMED':'CLAIM'}</button>
