@@ -1,0 +1,1871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="BuildTrack" />
+<title>BuildTrack</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Barlow+Condensed:wght@600;700;800&display=swap" rel="stylesheet" />
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #08090a; -webkit-tap-highlight-color: transparent; }
+input, textarea, button, a { font-family: inherit; }
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+textarea { outline: none; }
+button { outline: none; }
+::-webkit-scrollbar { width: 4px; } ::-webkit-scrollbar-track { background: #08090a; } ::-webkit-scrollbar-thumb { background: #232a38; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div id="root">Loading…</div>
+
+<script>
+  window.addEventListener("error", function (e) {
+    var root = document.getElementById("root");
+    if (root) {
+      root.innerHTML =
+        '<div style="font-family:monospace;padding:20px;color:#8A4A16;background:#F4E3D3;white-space:pre-wrap;">' +
+        "SCRIPT ERROR:\n" + (e.message || e) + "\n\nFile: " + (e.filename || "?") + " Line: " + (e.lineno || "?") +
+        "</div>";
+    }
+  });
+</script>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js" crossorigin></script>
+
+<script>
+  setTimeout(function () {
+    var root = document.getElementById("root");
+    if (root && root.innerText.trim() === "Loading…") {
+      root.innerHTML =
+        '<div style="font-family:monospace;padding:20px;color:#8A4A16;background:#F4E3D3;">' +
+        "Still loading after 5 seconds — likely the React/Babel scripts from unpkg.com didn't load. " +
+        "Check your internet connection, or whether an ad blocker / firewall is blocking unpkg.com." +
+        "</div>";
+    }
+  }, 5000);
+</script>
+
+<script type="text/babel" data-presets="react">
+
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ════════════════════════════════════════════════════════════════
+//  CONFIGURE — paste your Apps Script URL between the quotes
+// ════════════════════════════════════════════════════════════════
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyOD3tU4NA9Rq8hBeCkgtcelQ6S5Ze1CQXfX2alC3bwgA-oB2sRCbzs_GJv1PWw5B6o/exec';
+// ════════════════════════════════════════════════════════════════
+
+const MILESTONES = [
+  { key:'tempElectric', label:'Temp Electrical Service',   sublabel:'Ordered'    },
+  { key:'gasRiser',     label:'Gas Riser',                  sublabel:'Ordered'    },
+  { key:'roughIn',      label:'Rough-In Inspection',        sublabel:'Passed'     },
+  { key:'permElectric', label:'Permanent Electrical Meter', sublabel:'Ordered'    },
+  { key:'permGas',      label:'Permanent Gas Meter',        sublabel:'Ordered'    },
+  { key:'co',           label:'Certificate of Occupancy',   sublabel:'Received'   },
+  { key:'walkthrough',  label:'Walkthrough',                sublabel:'Date & Time'},
+  { key:'finalClean',   label:'Final Clean',                sublabel:'Scheduled'  },
+  { key:'closing',      label:'Closing',                    sublabel:'Date'       },
+];
+
+const BONUS_DEFS = [
+  { key:'roughIn',  label:'Rough-In Bonus',      abbr:'R/I',   milestoneKey:'roughIn'  },
+  { key:'co',       label:'CO Bonus',             abbr:'CO',    milestoneKey:'co'       },
+  { key:'closing',  label:'Closing Bonus',        abbr:'CLOSE', milestoneKey:'closing'  },
+  { key:'basement', label:'Basement Finish Bonus',abbr:'BSMT',  milestoneKey:null, requiresBasement:true },
+];
+
+// ── Helpers ──────────────────────────────────────────────────────
+const genId   = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+const fmtDate = d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) : null;
+const fmtShort= d => d ? new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'}) : null;
+const daysTo  = d => { if (!d) return null; const t=new Date(); t.setHours(0,0,0,0); return Math.round((new Date(d+'T00:00:00')-t)/86400000); };
+const fmtTime = t => { if (!t) return null; const [h,m]=t.split(':').map(Number); return `${h%12||12}:${String(m).padStart(2,'0')} ${h>=12?'PM':'AM'}`; };
+const bonusFor= h => BONUS_DEFS.filter(b => b.requiresBasement ? h.basementFinish : true);
+const eligible= (h,b)=> b.requiresBasement ? h.basementFinish : (!!h.milestones[b.milestoneKey] && daysTo(h.milestones[b.milestoneKey])<=0);
+
+function icsUri(address, date, time) {
+  const dt=date.replace(/-/g,''), st=time.replace(':','')+'00';
+  const h=parseInt(time.split(':')[0]), mn=time.split(':')[1];
+  const et=`${String((h+1)%24).padStart(2,'0')}${mn}00`;
+  const ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//BuildTrack//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',
+    'BEGIN:VEVENT',`UID:${dt}-${st}-bt@local`,`DTSTART:${dt}T${st}`,`DTEND:${dt}T${et}`,
+    `SUMMARY:Walkthrough \u2013 ${address}`,`DESCRIPTION:Home walkthrough at ${address}`,
+    'END:VEVENT','END:VCALENDAR'].join('\r\n');
+  return `data:text/calendar;charset=utf-8;base64,${btoa(unescape(encodeURIComponent(ics)))}`;
+}
+
+// ── Sync ─────────────────────────────────────────────────────────
+const configured = () => SCRIPT_URL !== 'YOUR_SCRIPT_URL_HERE';
+
+async function sheetsLoad() {
+  const res = await fetch(`${SCRIPT_URL}?t=${Date.now()}`);
+  const data = await res.json();
+  return Array.isArray(data.houses) ? data.houses : null;
+}
+
+async function sheetsSave(houses) {
+  await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ houses }) });
+}
+
+// ── UI Primitives ────────────────────────────────────────────────
+function Badge({ color, children }) {
+  const c = {
+    amber: {bg:'rgba(92,122,153,0.15)',  t:'#5c7a99', b:'rgba(92,122,153,0.3)'},
+    green: {bg:'rgba(34,197,94,0.12)',   t:'#4ade80', b:'rgba(34,197,94,0.25)'},
+    purple:{bg:'rgba(167,139,250,0.12)', t:'#a78bfa', b:'rgba(167,139,250,0.25)'},
+    red:   {bg:'rgba(239,68,68,0.12)',   t:'#f87171', b:'rgba(239,68,68,0.25)'},
+    blue:  {bg:'rgba(96,165,250,0.12)',  t:'#60a5fa', b:'rgba(96,165,250,0.25)'},
+  }[color]||{bg:'rgba(92,122,153,0.15)',t:'#5c7a99',b:'rgba(92,122,153,0.3)'};
+  return <span style={{fontSize:9,fontWeight:700,letterSpacing:'0.08em',padding:'2px 7px',borderRadius:3,backgroundColor:c.bg,color:c.t,border:`1px solid ${c.b}`}}>{children}</span>;
+}
+function SubLine({ house, style }) {
+  if (!house.subdivision && !house.lotNumber) return null;
+  return <div style={{fontSize:10,color:'#6b7280',letterSpacing:'0.05em',marginTop:3,...style}}>
+    {house.subdivision}{house.subdivision&&house.lotNumber?' · ':''}{house.lotNumber&&`Lot ${house.lotNumber}`}
+  </div>;
+}
+function Empty({ icon, text }) {
+  return <div style={{textAlign:'center',padding:'60px 20px'}}>
+    <div style={{fontSize:44,marginBottom:12}}>{icon}</div>
+    <div style={{color:'#4b5563',fontSize:13}}>{text}</div>
+  </div>;
+}
+function Overlay({ title, children }) {
+  return <div style={S.overlay}><div style={S.modal}><div style={S.modalTitle}>{title}</div>{children}</div></div>;
+}
+function Tog({ on, onClick }) {
+  return <div style={{...S.toggle,...(on?S.toggleOn:{})}} onClick={onClick}>
+    <div style={{...S.thumb,...(on?S.thumbOn:{})}} />
+  </div>;
+}
+
+// ── App ──────────────────────────────────────────────────────────
+function MilestonesApp() {
+  const [houses, setHouses]   = useState([]);
+  const [view, setView]       = useState('dashboard');
+  const [selId, setSelId]     = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [loaded, setLoaded]   = useState(false);
+  const [sync, setSync]       = useState('idle');
+  const timer = useRef(null);
+
+  useEffect(() => {
+    async function load() {
+      if (configured()) {
+        try {
+          const data = await sheetsLoad();
+          if (data) {
+            setHouses(data);
+            try { localStorage.setItem('bt',JSON.stringify(data)); } catch(e){}
+            setSync('synced'); setTimeout(()=>setSync('idle'),2000);
+            setLoaded(true); return;
+          }
+        } catch(e) { setSync('offline'); }
+      }
+      try { const s=localStorage.getItem('bt'); if(s) setHouses(JSON.parse(s)); } catch(e){}
+      setLoaded(true);
+    }
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    try { localStorage.setItem('bt',JSON.stringify(houses)); } catch(e){}
+    if (!configured()) return;
+    clearTimeout(timer.current);
+    setSync('saving');
+    timer.current = setTimeout(async () => {
+      try { await sheetsSave(houses); setSync('synced'); setTimeout(()=>setSync('idle'),2500); }
+      catch(e) { setSync('error'); }
+    }, 1500);
+    return () => clearTimeout(timer.current);
+  }, [houses, loaded]);
+
+  const addHouse = d => {
+    setHouses(p=>[...p,{id:genId(),address:d.address,lotNumber:d.lotNumber,subdivision:d.subdivision,basementFinish:d.basementFinish,notes:'',milestones:{},bonuses:{roughIn:false,co:false,closing:false,basement:false},archived:false}]);
+    setShowAdd(false);
+  };
+  const upM  = (id,k,v) => setHouses(p=>p.map(h=>h.id===id?{...h,milestones:{...h.milestones,[k]:v}}:h));
+  const upH  = (id,u)   => setHouses(p=>p.map(h=>h.id===id?{...h,...u}:h));
+  const togB = (id,bk)  => setHouses(p=>p.map(h=>h.id===id?{...h,bonuses:{...h.bonuses,[bk]:!h.bonuses[bk]}}:h));
+  const arch = id => { setHouses(p=>p.map(h=>h.id===id?{...h,archived:true}:h)); setView('dashboard'); };
+  const del  = id => { setHouses(p=>p.filter(h=>h.id!==id)); setView('dashboard'); };
+
+  const sel      = houses.find(h=>h.id===selId);
+  const active   = houses.filter(h=>!h.archived);
+  const archived = houses.filter(h=>h.archived);
+  const byClose  = [...active].sort((a,b)=>{
+    if(!a.milestones.closing&&!b.milestones.closing) return 0;
+    if(!a.milestones.closing) return 1; if(!b.milestones.closing) return -1;
+    return new Date(a.milestones.closing)-new Date(b.milestones.closing);
+  });
+  const byBonus  = [...active].sort((a,b)=>{
+    const au=bonusFor(a).filter(bx=>!a.bonuses[bx.key]&&eligible(a,bx)).length;
+    const bu=bonusFor(b).filter(bx=>!b.bonuses[bx.key]&&eligible(b,bx)).length;
+    return bu-au;
+  });
+  const totalOwed = active.reduce((s,h)=>s+bonusFor(h).filter(b=>!h.bonuses[b.key]&&eligible(h,b)).length,0);
+  const navView   = view==='detail'?(sel?.archived?'archive':'dashboard'):view;
+  const TABS      = [['dashboard','HOMES'],['closing','CLOSINGS'],['bonuses','BONUSES'],['archive','ARCHIVE']];
+  const syncMsgs  = {saving:'saving…',synced:'✓ synced',error:'sync error — check connection',offline:'offline — changes saved locally'};
+
+  if (!loaded) return <div style={{...S.app,display:'flex',alignItems:'center',justifyContent:'center'}}>
+    <span style={{color:'#5c7a99',fontFamily:"'DM Mono',monospace",letterSpacing:'0.1em'}}>LOADING…</span>
+  </div>;
+
+  return (
+    <div style={S.app}>
+      <div style={S.header}>
+        <div style={S.logo}>BUILDTRACK</div>
+        <div style={S.nav}>
+          {TABS.map(([v,label])=>(
+            <button key={v} style={{...S.navBtn,...(navView===v?S.navActive:{})}} onClick={()=>setView(v)}>
+              {label}
+              {v==='archive'&&archived.length>0&&<span style={{...S.dot,background:'#a78bfa'}}>{archived.length}</span>}
+              {v==='bonuses'&&totalOwed>0&&<span style={{...S.dot,background:'#5c7a99',color:'#08090a'}}>{totalOwed}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {sync!=='idle'&&syncMsgs[sync]&&(
+        <div style={{...S.syncBar,...(sync==='saving'?S.syncSaving:sync==='synced'?S.syncOk:S.syncErr)}}>
+          {syncMsgs[sync]}
+        </div>
+      )}
+
+      <div style={S.body}>
+        {!configured()&&(
+          <div style={S.banner}>
+            ⚙ Open <strong>index.html</strong> and replace <code>YOUR_SCRIPT_URL_HERE</code> with your Apps Script URL to enable Google Sheets sync.
+          </div>
+        )}
+        {view==='dashboard' && <Dashboard houses={active} onSelect={id=>{setSelId(id);setView('detail');}} onAdd={()=>setShowAdd(true)} />}
+        {view==='detail'&&sel && <Detail house={sel} onUpdate={(k,v)=>upM(selId,k,v)} onUpdateHouse={u=>upH(selId,u)} onToggleBonus={k=>togB(selId,k)} onArchive={()=>arch(selId)} onDelete={()=>del(selId)} onBack={()=>setView(sel.archived?'archive':'dashboard')} />}
+        {view==='closing'   && <Closing houses={byClose} onSelect={id=>{setSelId(id);setView('detail');}} />}
+        {view==='bonuses'   && <Bonuses houses={byBonus} onSelect={id=>{setSelId(id);setView('detail');}} onToggleBonus={(id,k)=>togB(id,k)} />}
+        {view==='archive'   && <Archive houses={archived} onSelect={id=>{setSelId(id);setView('detail');}} onRestore={id=>upH(id,{archived:false})} />}
+      </div>
+
+      {showAdd && <AddModal onAdd={addHouse} onClose={()=>setShowAdd(false)} />}
+    </div>
+  );
+}
+
+// ── Dashboard ────────────────────────────────────────────────────
+function Dashboard({ houses, onSelect, onAdd }) {
+  return (
+    <div>
+      <div style={S.ph}><h1 style={S.pt}>Active Homes <span style={S.dc}>{houses.length}</span></h1><button style={S.pBtn} onClick={onAdd}>+ NEW HOME</button></div>
+      {houses.length===0&&<Empty icon="🏠" text="No active homes. Tap + NEW HOME to get started." />}
+      <div style={S.stack}>
+        {houses.map(h=>{
+          const done=MILESTONES.filter(m=>h.milestones[m.key]).length;
+          const pct=Math.round((done/MILESTONES.length)*100);
+          const days=daysTo(h.milestones.closing);
+          const owed=bonusFor(h).filter(b=>!h.bonuses[b.key]&&eligible(h,b)).length;
+          const past=days!==null&&days<0, urg=days!==null&&days>=0&&days<=7;
+          return (
+            <div key={h.id} style={S.card} onClick={()=>onSelect(h.id)}>
+              <div style={S.cardRow}>
+                <div style={{flex:1,marginRight:10}}><div style={S.addr}>{h.address}</div><SubLine house={h} /></div>
+                <div style={S.badges}>{h.basementFinish&&<Badge color="amber">BSMT</Badge>}{h.milestones.finalClean&&<Badge color="green">CLEAN ✓</Badge>}</div>
+              </div>
+              <div style={S.prog}><div style={{...S.progF,width:`${pct}%`}} /></div>
+              <div style={S.meta}>
+                <span style={S.metaTxt}>{done}/{MILESTONES.length} milestones</span>
+                {owed>0&&<Badge color="purple">{owed} bonus{owed>1?'es':''} owed</Badge>}
+                {h.milestones.closing&&<span style={{...S.cpill,...(urg?S.pillU:{}),...(past?S.pillP:{})}}>CLOSING {fmtDate(h.milestones.closing)}{days>=0?` · ${days}d`:` · ${Math.abs(days)}d ago`}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Detail ───────────────────────────────────────────────────────
+function Detail({ house:h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, onDelete, onBack }) {
+  const [confArch, setConfArch] = useState(false);
+  const [confDel,  setConfDel]  = useState(false);
+  const appl    = bonusFor(h);
+  const unclaim = appl.filter(b=>!h.bonuses[b.key]&&eligible(h,b));
+
+  return (
+    <div>
+      <div style={S.ph}>
+        <button style={S.gBtn} onClick={onBack}>← BACK</button>
+        <div style={{display:'flex',gap:8}}>
+          {!h.archived&&<button style={S.aBtn} onClick={()=>unclaim.length>0?setConfArch(true):onArchive()}>ARCHIVE</button>}
+          {h.archived&&<button style={S.pBtn} onClick={()=>onUpdateHouse({archived:false})}>RESTORE</button>}
+          <button style={S.dBtn} onClick={()=>setConfDel(true)}>DELETE</button>
+        </div>
+      </div>
+
+      <input
+        style={{...S.dAddr,background:'transparent',border:'none',borderBottom:'1px dashed #232a38',padding:'0 0 4px 0',width:'100%',outline:'none'}}
+        value={h.address}
+        onChange={e=>onUpdateHouse({address:e.target.value})}
+        placeholder="Street address…"
+      />
+      <SubLine house={h} style={{marginBottom:16,fontSize:12}} />
+
+      <div style={S.fRow}>
+        <div style={S.fGrp}><label style={S.fLbl}>SUBDIVISION</label><input style={S.tIn} value={h.subdivision||''} onChange={e=>onUpdateHouse({subdivision:e.target.value})} placeholder="Subdivision name…" /></div>
+        <div style={S.fGrp}><label style={S.fLbl}>LOT NUMBER</label><input style={S.tIn} value={h.lotNumber||''} onChange={e=>onUpdateHouse({lotNumber:e.target.value})} placeholder="e.g. 141" /></div>
+      </div>
+      <div style={{...S.togRow,marginBottom:20}}>
+        <span style={S.togLbl}>BASEMENT FINISH</span>
+        <Tog on={h.basementFinish} onClick={()=>onUpdateHouse({basementFinish:!h.basementFinish})} />
+      </div>
+      <div style={S.div} />
+
+      <div style={S.secLbl}>MILESTONES</div>
+      <div style={{...S.stack,marginBottom:28}}>
+        {MILESTONES.map((m,i)=>{
+          const val=h.milestones[m.key]||'', set=!!val;
+          const isW=m.key==='walkthrough', isC=m.key==='finalClean', isCl=m.key==='closing';
+          const tv=h.milestones.walkthroughTime||'';
+          const days=(isCl||isW)?daysTo(val):null;
+          const cal=isW&&val&&tv?icsUri(h.address,val,tv):null;
+          return (
+            <div key={m.key} style={{...S.mRow,...(isC&&set?S.mClean:{}),...(isCl&&set?S.mClose:{}),...(isW?S.mWalk:{})}}>
+              <div style={S.mL}>
+                <span style={S.mNum}>{String(i+1).padStart(2,'0')}</span>
+                <div>
+                  <div style={S.mName}>{m.label}</div>
+                  <div style={S.mSub}>{m.sublabel}{isW&&set&&tv?` · ${fmtTime(tv)}`:''}</div>
+                </div>
+              </div>
+              <div style={{...S.mR,flexDirection:'column',alignItems:'flex-end',gap:5}}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  {isC&&set&&<Badge color="green">SCHEDULED</Badge>}
+                  {days!==null&&set&&<span style={{...S.dPill,color:days<0?'#f87171':days<=7?'#5c7a99':'#60a5fa'}}>{days<0?`${Math.abs(days)}d ago`:days===0?'TODAY':`${days}d`}</span>}
+                  <input type="date" value={val} onChange={e=>onUpdate(m.key,e.target.value)} style={S.dIn} />
+                  {set&&<button style={S.clearBtn} onClick={()=>onUpdate(m.key,'')} title="Clear date">✕</button>}
+                </div>
+                {isW&&(
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <input type="time" value={tv} onChange={e=>onUpdate('walkthroughTime',e.target.value)} style={{...S.dIn,width:110}} />
+                    {cal&&<a href={cal} style={S.calBtn}>📅 iPhone Cal</a>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={S.secLbl}>BONUSES</div>
+      <div style={{...S.stack,marginBottom:28}}>
+        {appl.map(b=>{
+          const el=eligible(h,b), cl=h.bonuses[b.key];
+          return (
+            <div key={b.key} style={{...S.bonRow,...(cl?S.bonCl:el?S.bonEl:{})}}>
+              <div style={S.mL}>
+                <div style={{...S.bonDot,...(cl?S.bonDotCl:el?S.bonDotEl:{})}} />
+                <div>
+                  <div style={S.mName}>{b.label}</div>
+                  <div style={S.mSub}>{b.milestoneKey&&h.milestones[b.milestoneKey]?`Milestone: ${fmtDate(h.milestones[b.milestoneKey])}`:!el&&!b.requiresBasement?'Set milestone date to unlock':''}</div>
+                </div>
+              </div>
+              <button style={{...S.clBtn,...(cl?S.clDone:el?S.clRdy:S.clLk)}} onClick={()=>el&&onToggleBonus(b.key)} disabled={!el}>{cl?'✓ CLAIMED':'CLAIM'}</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={S.secLbl}>NOTES</div>
+      <textarea style={S.notes} value={h.notes||''} onChange={e=>onUpdateHouse({notes:e.target.value})} placeholder="Any notes for this home…" rows={4} />
+
+      {confArch&&(
+        <Overlay title="Archive this home?">
+          <div style={S.mSub2}>{h.address}</div>
+          {unclaim.length>0&&<div style={S.warn}><div style={{color:'#fbbf24',fontSize:11,fontWeight:700,marginBottom:6}}>⚠ UNCLAIMED BONUSES</div>{unclaim.map(b=><div key={b.key} style={{color:'#d1d5db',fontSize:11,marginBottom:2}}>• {b.label}</div>)}</div>}
+          <div style={S.mBtns}><button style={S.gBtn} onClick={()=>setConfArch(false)}>CANCEL</button><button style={S.archConfBtn} onClick={()=>{setConfArch(false);onArchive();}}>ARCHIVE ANYWAY</button></div>
+        </Overlay>
+      )}
+      {confDel&&(
+        <Overlay title="Delete this home?">
+          <div style={S.mSub2}>This cannot be undone. {h.address}</div>
+          <div style={S.mBtns}><button style={S.gBtn} onClick={()=>setConfDel(false)}>CANCEL</button><button style={{...S.pBtn,backgroundColor:'#ef4444'}} onClick={onDelete}>DELETE</button></div>
+        </Overlay>
+      )}
+    </div>
+  );
+}
+
+// ── Bonuses ──────────────────────────────────────────────────────
+function Bonuses({ houses, onSelect, onToggleBonus }) {
+  const hasAny = houses.some(h=>bonusFor(h).length>0);
+  return (
+    <div>
+      <div style={S.ph}><h1 style={S.pt}>Bonus Tracker</h1></div>
+      {!hasAny&&<Empty icon="💰" text="No bonuses to track yet. Add milestone dates to unlock." />}
+      {hasAny&&(
+        <div style={S.bonHead}>
+          <div style={{flex:1}}>HOME</div>
+          <div style={S.bonCols}>{['R/I','CO','CLOSE','BSMT'].map(l=><div key={l} style={S.bonColH}>{l}</div>)}</div>
+        </div>
+      )}
+      <div style={S.stack}>
+        {houses.map(h=>{
+          const appl=bonusFor(h);
+          if (!appl.length) return null;
+          return (
+            <div key={h.id} style={S.bonCard}>
+              <div style={{...S.bonAddrRow,cursor:'pointer'}} onClick={()=>onSelect(h.id)}>
+                <div style={S.addr}>{h.address}</div>
+                <SubLine house={h} />
+              </div>
+              <div style={S.bonChipRow}>
+                {BONUS_DEFS.map(b=>{
+                  if (!bonusFor(h).find(x=>x.key===b.key)) return <div key={b.key} style={S.bonCell}><div style={S.bonNA}>—</div></div>;
+                  const el=eligible(h,b), cl=h.bonuses[b.key];
+                  const md=b.milestoneKey?h.milestones[b.milestoneKey]:null;
+                  return (
+                    <div key={b.key} style={S.bonCell}>
+                      <div style={S.bonCLbl}>{b.abbr}</div>
+                      {md&&<div style={S.bonCDate}>{fmtShort(md)}</div>}
+                      {!el&&!md&&<div style={S.bonCDate}>pending</div>}
+                      <button style={{...S.bonCBtn,...(cl?S.chipCl:el?S.chipRdy:S.chipLk)}} onClick={e=>{e.stopPropagation();el&&onToggleBonus(h.id,b.key);}} disabled={!el}>{cl?'✓':'CLAIM'}</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Closing ──────────────────────────────────────────────────────
+function Closing({ houses, onSelect }) {
+  return (
+    <div>
+      <div style={S.ph}><h1 style={S.pt}>Closing Schedule</h1></div>
+      {houses.length===0&&<Empty icon="📅" text="No active homes with closing dates." />}
+      <div style={S.stack}>
+        {houses.map((h,i)=>{
+          const days=daysTo(h.milestones.closing);
+          const past=days!==null&&days<0, urg=days!==null&&days>=0&&days<=7, soon=days!==null&&days>7&&days<=30;
+          const done=MILESTONES.filter(m=>h.milestones[m.key]).length, pct=Math.round((done/MILESTONES.length)*100);
+          const owed=bonusFor(h).filter(b=>!h.bonuses[b.key]&&eligible(h,b)).length;
+          const wt=h.milestones.walkthrough, wtT=h.milestones.walkthroughTime;
+          return (
+            <div key={h.id} style={{...S.clRow,...(urg?S.clUrg:{}),...(past?S.clPast:{})}} onClick={()=>onSelect(h.id)}>
+              <div style={S.clRank}>{String(i+1).padStart(2,'0')}</div>
+              <div style={S.clInfo}>
+                <div style={S.addr}>{h.address}</div>
+                <SubLine house={h} style={{marginTop:2}} />
+                {wt&&<div style={S.wtLine}>WT: {fmtShort(wt)}{wtT?` · ${fmtTime(wtT)}`:''}</div>}
+                <div style={{display:'flex',gap:5,marginTop:5,flexWrap:'wrap',alignItems:'center'}}>
+                  {h.basementFinish&&<Badge color="amber">BSMT</Badge>}
+                  {h.milestones.finalClean&&<Badge color="green">CLEAN ✓</Badge>}
+                  {owed>0&&<Badge color="purple">{owed} bonus{owed>1?'es':''} owed</Badge>}
+                  <span style={{...S.metaTxt,fontSize:10}}>{pct}% complete</span>
+                </div>
+              </div>
+              <div style={S.clDate}>
+                {h.milestones.closing?(<>
+                  <div style={S.clDT}>{fmtDate(h.milestones.closing)}</div>
+                  {days!==null&&<div style={{...S.clDays,color:past?'#f87171':urg?'#5c7a99':soon?'#60a5fa':'#6b7280'}}>{past?`${Math.abs(days)}d ago`:days===0?'TODAY':`${days}d away`}</div>}
+                </>):<span style={{color:'#374151'}}>—</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Archive ──────────────────────────────────────────────────────
+function Archive({ houses, onSelect, onRestore }) {
+  return (
+    <div>
+      <div style={S.ph}><h1 style={S.pt}>Archive <span style={S.dc}>{houses.length}</span></h1></div>
+      {houses.length===0&&<Empty icon="📦" text="No archived homes yet." />}
+      <div style={S.stack}>
+        {houses.map(h=>{
+          const allCl=bonusFor(h).every(b=>h.bonuses[b.key]);
+          const done=MILESTONES.filter(m=>h.milestones[m.key]).length;
+          return (
+            <div key={h.id} style={{...S.card,opacity:0.85}}>
+              <div style={S.cardRow}>
+                <div style={{flex:1,cursor:'pointer'}} onClick={()=>onSelect(h.id)}><div style={S.addr}>{h.address}</div><SubLine house={h} /></div>
+                <button style={{...S.gBtn,fontSize:10}} onClick={e=>{e.stopPropagation();onRestore(h.id);}}>RESTORE</button>
+              </div>
+              <div style={{display:'flex',gap:5,flexWrap:'wrap',alignItems:'center'}}>
+                {h.basementFinish&&<Badge color="amber">BSMT</Badge>}
+                {allCl?<Badge color="green">ALL BONUSES CLAIMED</Badge>:<Badge color="red">BONUSES INCOMPLETE</Badge>}
+                <span style={S.metaTxt}>{done}/{MILESTONES.length} milestones · Closed {fmtDate(h.milestones.closing)||'—'}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Add Modal ────────────────────────────────────────────────────
+function AddModal({ onAdd, onClose }) {
+  const [addr,setAddr]=useState(''), [lot,setLot]=useState(''), [sub,setSub]=useState(''), [bsmt,setBsmt]=useState(false);
+  const go=()=>{ if(addr.trim()) onAdd({address:addr.trim(),lotNumber:lot.trim(),subdivision:sub.trim(),basementFinish:bsmt}); };
+  return (
+    <Overlay title="Add New Home">
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        <div><label style={S.fLbl}>ADDRESS</label><input style={S.tIn} placeholder="Street address…" value={addr} onChange={e=>setAddr(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} autoFocus /></div>
+        <div style={S.fRow}>
+          <div style={S.fGrp}><label style={S.fLbl}>SUBDIVISION</label><input style={S.tIn} placeholder="Name…" value={sub} onChange={e=>setSub(e.target.value)} /></div>
+          <div style={S.fGrp}><label style={S.fLbl}>LOT #</label><input style={S.tIn} placeholder="e.g. 141" value={lot} onChange={e=>setLot(e.target.value)} /></div>
+        </div>
+        <div style={{...S.togRow,marginTop:4}}>
+          <span style={S.togLbl}>BASEMENT FINISH</span>
+          <Tog on={bsmt} onClick={()=>setBsmt(!bsmt)} />
+        </div>
+      </div>
+      <div style={{...S.mBtns,marginTop:20}}>
+        <button style={S.gBtn} onClick={onClose}>CANCEL</button>
+        <button style={{...S.pBtn,opacity:addr.trim()?1:0.4}} onClick={go}>ADD HOME</button>
+      </div>
+    </Overlay>
+  );
+}
+
+// ── Styles ───────────────────────────────────────────────────────
+const S = {
+  app:     {minHeight:'100vh',backgroundColor:'#08090a',color:'#e5e7eb',fontFamily:"'DM Mono','Courier New',monospace"},
+  header:  {backgroundColor:'#0f131b',borderBottom:'2px solid #1c2230',padding:'13px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:100},
+  logo:    {fontFamily:"'DM Mono',monospace",fontSize:15,fontWeight:500,color:'#8f97a3',letterSpacing:'0.1em'},
+  nav:     {display:'flex',gap:4},
+  navBtn:  {background:'none',border:'1px solid #232a38',color:'#6b7280',padding:'5px 9px',borderRadius:4,fontSize:9,letterSpacing:'0.08em',cursor:'pointer',fontFamily:"'DM Mono',monospace",position:'relative'},
+  navActive:{borderColor:'#5c7a99',color:'#5c7a99',backgroundColor:'rgba(92,122,153,0.1)'},
+  dot:     {position:'absolute',top:-5,right:-5,fontSize:8,fontWeight:700,borderRadius:'50%',width:14,height:14,display:'flex',alignItems:'center',justifyContent:'center',color:'#000'},
+  syncBar: {fontSize:10,letterSpacing:'0.08em',padding:'5px 16px',textAlign:'center',fontFamily:"'DM Mono',monospace"},
+  syncSaving:{backgroundColor:'rgba(92,122,153,0.12)',color:'#5c7a99'},
+  syncOk:  {backgroundColor:'rgba(34,197,94,0.1)',color:'#4ade80'},
+  syncErr: {backgroundColor:'rgba(239,68,68,0.1)',color:'#f87171'},
+  banner:  {backgroundColor:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'10px 14px',fontSize:11,color:'#fbbf24',marginBottom:16,lineHeight:1.6},
+  body:    {padding:'20px 16px',maxWidth:760,margin:'0 auto'},
+  ph:      {display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20},
+  pt:      {fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:700,color:'#f3f4f6',letterSpacing:'0.05em',margin:0},
+  dc:      {fontSize:16,color:'#4b5563',marginLeft:8},
+  pBtn:    {backgroundColor:'#5c7a99',color:'#08090a',border:'none',padding:'9px 18px',borderRadius:4,fontSize:11,fontWeight:700,letterSpacing:'0.12em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
+  gBtn:    {background:'none',border:'1px solid #232a38',color:'#9ca3af',padding:'7px 14px',borderRadius:4,fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
+  dBtn:    {background:'none',border:'1px solid rgba(239,68,68,0.35)',color:'#f87171',padding:'7px 14px',borderRadius:4,fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
+  aBtn:    {background:'none',border:'1px solid rgba(167,139,250,0.35)',color:'#a78bfa',padding:'7px 14px',borderRadius:4,fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
+  archConfBtn:{backgroundColor:'#7c3aed',color:'#fff',border:'none',padding:'9px 18px',borderRadius:4,fontSize:11,fontWeight:700,letterSpacing:'0.12em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
+  stack:   {display:'flex',flexDirection:'column',gap:8},
+  card:    {backgroundColor:'#0f131b',border:'1px solid #1c2230',borderRadius:8,padding:16,cursor:'pointer'},
+  cardRow: {display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:12},
+  addr:    {fontSize:14,fontWeight:500,color:'#f3f4f6',lineHeight:1.3},
+  badges:  {display:'flex',gap:5,flexWrap:'wrap',justifyContent:'flex-end'},
+  prog:    {height:3,backgroundColor:'#1c2230',borderRadius:2,overflow:'hidden',marginBottom:6},
+  progF:   {height:'100%',backgroundColor:'#5c7a99',borderRadius:2,transition:'width 0.4s'},
+  meta:    {display:'flex',alignItems:'center',flexWrap:'wrap',gap:6},
+  metaTxt: {fontSize:10,color:'#6b7280',letterSpacing:'0.05em'},
+  cpill:   {fontSize:9,fontWeight:700,letterSpacing:'0.08em',padding:'3px 8px',borderRadius:3,backgroundColor:'rgba(96,165,250,0.1)',color:'#60a5fa',border:'1px solid rgba(96,165,250,0.2)'},
+  pillU:   {backgroundColor:'rgba(92,122,153,0.15)',color:'#8fadc9',border:'1px solid rgba(92,122,153,0.3)'},
+  pillP:   {backgroundColor:'rgba(239,68,68,0.1)',color:'#f87171',border:'1px solid rgba(239,68,68,0.2)'},
+  dAddr:   {fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:700,color:'#f3f4f6',letterSpacing:'0.03em',margin:'0 0 2px 0',lineHeight:1.2},
+  fRow:    {display:'flex',gap:10,marginBottom:14},
+  fGrp:    {flex:1},
+  fLbl:    {fontSize:9,color:'#6b7280',letterSpacing:'0.12em',display:'block',marginBottom:4},
+  togRow:  {display:'flex',alignItems:'center',justifyContent:'space-between'},
+  togLbl:  {fontSize:11,letterSpacing:'0.1em',color:'#6b7280'},
+  toggle:  {width:44,height:24,backgroundColor:'#232a38',borderRadius:12,position:'relative',cursor:'pointer',transition:'background 0.2s',flexShrink:0},
+  toggleOn:{backgroundColor:'#5c7a99'},
+  thumb:   {position:'absolute',top:3,left:3,width:18,height:18,backgroundColor:'#fff',borderRadius:'50%',transition:'left 0.2s'},
+  thumbOn: {left:23},
+  div:     {height:1,backgroundColor:'#1c2230',margin:'20px 0'},
+  secLbl:  {fontSize:10,color:'#6b7280',letterSpacing:'0.15em',marginBottom:10,fontWeight:700},
+  mRow:    {backgroundColor:'#0f131b',border:'1px solid #1c2230',borderRadius:6,padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10},
+  mClean:  {borderColor:'rgba(34,197,94,0.3)',backgroundColor:'rgba(34,197,94,0.04)'},
+  mClose:  {borderColor:'rgba(92,122,153,0.3)',backgroundColor:'rgba(92,122,153,0.05)'},
+  mWalk:   {borderColor:'rgba(167,139,250,0.25)',backgroundColor:'rgba(167,139,250,0.03)'},
+  mL:      {display:'flex',alignItems:'center',gap:10,flex:1,minWidth:0},
+  mNum:    {fontSize:10,color:'#232a38',fontWeight:700,flexShrink:0,width:20},
+  mName:   {fontSize:13,color:'#e5e7eb',fontWeight:500},
+  mSub:    {fontSize:10,color:'#6b7280',letterSpacing:'0.05em',marginTop:1},
+  mR:      {display:'flex',alignItems:'center',gap:6,flexShrink:0},
+  dPill:   {fontSize:9,fontWeight:700,letterSpacing:'0.06em'},
+  dIn:     {backgroundColor:'#08090a',border:'1px solid #232a38',borderRadius:4,color:'#f3f4f6',padding:'5px 8px',fontSize:11,fontFamily:"'DM Mono',monospace",width:130,colorScheme:'dark'},
+  clearBtn:{background:'none',border:'1px solid #232a38',color:'#6b7280',borderRadius:4,width:22,height:22,fontSize:10,cursor:'pointer',fontFamily:"'DM Mono',monospace",flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',padding:0},
+  calBtn:  {display:'inline-block',backgroundColor:'rgba(167,139,250,0.15)',border:'1px solid rgba(167,139,250,0.35)',color:'#a78bfa',padding:'5px 10px',borderRadius:4,fontSize:10,fontWeight:700,letterSpacing:'0.08em',cursor:'pointer',fontFamily:"'DM Mono',monospace",whiteSpace:'nowrap',textDecoration:'none'},
+  bonRow:  {backgroundColor:'#0f131b',border:'1px solid #1c2230',borderRadius:6,padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10},
+  bonEl:   {borderColor:'rgba(167,139,250,0.3)',backgroundColor:'rgba(167,139,250,0.04)'},
+  bonCl:   {borderColor:'rgba(34,197,94,0.3)',backgroundColor:'rgba(34,197,94,0.04)'},
+  bonDot:  {width:8,height:8,borderRadius:'50%',backgroundColor:'#232a38',flexShrink:0},
+  bonDotEl:{backgroundColor:'#a78bfa'},
+  bonDotCl:{backgroundColor:'#4ade80'},
+  clBtn:   {padding:'6px 14px',borderRadius:4,fontSize:10,fontWeight:700,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace",border:'none',flexShrink:0},
+  clLk:    {backgroundColor:'#1c2230',color:'#374151',cursor:'not-allowed'},
+  clRdy:   {backgroundColor:'rgba(167,139,250,0.2)',color:'#a78bfa',border:'1px solid rgba(167,139,250,0.4)'},
+  clDone:  {backgroundColor:'rgba(34,197,94,0.15)',color:'#4ade80',border:'1px solid rgba(34,197,94,0.3)'},
+  notes:   {width:'100%',backgroundColor:'#08090a',border:'1px solid #232a38',borderRadius:6,color:'#d1d5db',padding:'10px 14px',fontSize:13,fontFamily:"'DM Mono',monospace",resize:'vertical',boxSizing:'border-box',colorScheme:'dark'},
+  bonHead: {display:'flex',alignItems:'center',padding:'0 16px 8px',fontSize:9,color:'#4b5563',letterSpacing:'0.1em',fontWeight:700},
+  bonCols: {display:'flex',gap:2,flexShrink:0},
+  bonColH: {width:68,textAlign:'center',fontSize:9,color:'#4b5563',letterSpacing:'0.1em'},
+  bonCard: {backgroundColor:'#0f131b',border:'1px solid #1c2230',borderRadius:8,overflow:'hidden'},
+  bonAddrRow:{padding:'12px 14px 8px',borderBottom:'1px solid #1a2030'},
+  bonChipRow:{display:'flex',padding:'10px 14px',gap:2},
+  bonCell: {width:68,display:'flex',flexDirection:'column',alignItems:'center',gap:3},
+  bonCLbl: {fontSize:9,fontWeight:700,color:'#6b7280',letterSpacing:'0.08em'},
+  bonCDate:{fontSize:9,color:'#4b5563',textAlign:'center',lineHeight:1.2},
+  bonNA:   {fontSize:12,color:'#232a38'},
+  bonCBtn: {fontSize:9,fontWeight:700,letterSpacing:'0.06em',padding:'3px 6px',borderRadius:3,cursor:'pointer',fontFamily:"'DM Mono',monospace",border:'none',width:'100%',textAlign:'center'},
+  chipLk:  {backgroundColor:'#1a2030',color:'#374151',cursor:'not-allowed'},
+  chipRdy: {backgroundColor:'rgba(167,139,250,0.2)',color:'#a78bfa',border:'1px solid rgba(167,139,250,0.4)',cursor:'pointer'},
+  chipCl:  {backgroundColor:'rgba(34,197,94,0.15)',color:'#4ade80',border:'1px solid rgba(34,197,94,0.3)',cursor:'pointer'},
+  clRow:   {backgroundColor:'#0f131b',border:'1px solid #1c2230',borderRadius:6,padding:'14px 16px',display:'flex',alignItems:'center',gap:14,cursor:'pointer'},
+  clUrg:   {borderColor:'rgba(92,122,153,0.3)',backgroundColor:'rgba(92,122,153,0.05)'},
+  clPast:  {borderColor:'rgba(239,68,68,0.2)',backgroundColor:'rgba(239,68,68,0.03)'},
+  clRank:  {fontSize:11,color:'#232a38',fontWeight:700,width:24,flexShrink:0},
+  clInfo:  {flex:1,minWidth:0},
+  wtLine:  {fontSize:10,color:'#a78bfa',marginTop:3,letterSpacing:'0.03em'},
+  clDate:  {textAlign:'right',flexShrink:0},
+  clDT:    {fontSize:12,color:'#d1d5db',fontWeight:600},
+  clDays:  {fontSize:10,fontWeight:700,letterSpacing:'0.05em',marginTop:2},
+  overlay: {position:'fixed',inset:0,backgroundColor:'rgba(0,0,0,0.75)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:200,padding:20},
+  modal:   {backgroundColor:'#0f131b',border:'1px solid #232a38',borderRadius:10,padding:24,width:'100%',maxWidth:400},
+  modalTitle:{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:700,color:'#f3f4f6',letterSpacing:'0.05em',marginBottom:8},
+  mSub2:   {fontSize:12,color:'#6b7280',marginBottom:16},
+  mBtns:   {display:'flex',gap:10,justifyContent:'flex-end'},
+  tIn:     {backgroundColor:'#08090a',border:'1px solid #232a38',borderRadius:6,color:'#f3f4f6',padding:'9px 12px',fontSize:13,fontFamily:"'DM Mono',monospace",width:'100%',boxSizing:'border-box'},
+  warn:    {backgroundColor:'rgba(245,158,11,0.08)',border:'1px solid rgba(245,158,11,0.2)',borderRadius:6,padding:'12px 14px',marginBottom:16},
+};
+
+
+// ==================== SCOPE DEVIATION TRACKER (embedded) ====================
+
+
+
+function Icon({ size = 16, strokeWidth = 2, className, style, children }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round"
+      className={className} style={style}>
+      {children}
+    </svg>
+  );
+}
+const Mic = (p) => <Icon {...p}><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><line x1="12" y1="19" x2="12" y2="22" /></Icon>;
+const Plus = (p) => <Icon {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Icon>;
+const Printer = (p) => <Icon {...p}><polyline points="6 9 6 2 18 2 18 9" /><rect x="6" y="14" width="12" height="8" /><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" /></Icon>;
+const ArrowLeft = (p) => <Icon {...p}><line x1="19" y1="12" x2="5" y2="12" /><polyline points="12 19 5 12 12 5" /></Icon>;
+const Trash2 = (p) => <Icon {...p}><polyline points="3 6 5 6 21 6" /><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /><path d="M10 11v6" /><path d="M14 11v6" /><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></Icon>;
+const Loader2 = (p) => <Icon {...p}><path d="M21 12a9 9 0 1 1-6.219-8.56" /></Icon>;
+const Send = (p) => <Icon {...p}><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></Icon>;
+const CheckCircle2 = (p) => <Icon {...p}><path d="M21.8 10A10 10 0 1 1 17 3.3" /><polyline points="22 4 12 14.01 9 11.01" /></Icon>;
+const Circle = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /></Icon>;
+const ChevronDown = (p) => <Icon {...p}><polyline points="6 9 12 15 18 9" /></Icon>;
+const AlertTriangle = (p) => <Icon {...p}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
+
+// ---- Your deployed Apps Script Web app ----
+// Paste the APP_TOKEN value you set in Script Properties below.
+const APPS_SCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbyIx1l9KW9foRfFJMWe25_V0j-Fnwqyju9s3vS-J0kfKMAguOZ8A9rjLrZfOqReoOqMvw/exec";
+const APP_TOKEN = "xx2aneQFPB7VVe5ANjYYgzgm-3GWuYrhF4n0EOUmwgg";
+
+const DEFAULT_CATEGORIES = [
+  "General",
+  "Framing",
+  "Mechanical",
+  "Electrical",
+  "Plumbing",
+  "Finish / Trim",
+  "Flooring",
+  "Cabinets / Tile",
+];
+
+const STATUS_COLORS = {
+  pending: { bg: "#F4E3D3", text: "#8A4A16", border: "#D98A3D" },
+  sent: { bg: "#F6EAC8", text: "#6B4F0E", border: "#C1972E" },
+  done: { bg: "#DCE8DD", text: "#2C4A32", border: "#5C8A66" },
+};
+
+function slugify(address) {
+  return address
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function newId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+async function withRetry(fn, attempts = 3, delayMs = 400) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) {
+        await new Promise((res) => setTimeout(res, delayMs * (i + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// GET requests -> read actions (listJobs, getJob)
+async function backendGet(params) {
+  const url = new URL(APPS_SCRIPT_URL);
+  Object.entries({ token: APP_TOKEN, ...params }).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url.toString());
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+// POST requests -> write/AI actions. IMPORTANT: Content-Type must stay text/plain —
+// Apps Script doesn't handle the CORS preflight that application/json triggers.
+async function backendPost(action, payload) {
+  const res = await fetch(APPS_SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action, token: APP_TOKEN, ...payload }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+
+
+const COMM_METHODS = [
+  { key: "email", label: "email" },
+  { key: "text", label: "text" },
+  { key: "coconstruct", label: "CoConstruct" },
+];
+
+function defaultCommunicated() {
+  return COMM_METHODS.reduce((acc, m) => {
+    acc[m.key] = { done: false, date: null };
+    return acc;
+  }, {});
+}
+
+function itemStatus(item) {
+  const anyCommunicated = item.communicated && Object.values(item.communicated).some((m) => m.done);
+  if (anyCommunicated && item.markedOut?.done) return "done";
+  if (anyCommunicated || item.markedOut?.done) return "sent";
+  return "pending";
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function buildPrintableHtml(job) {
+  const grouped = {};
+  job.categories.forEach((c) => (grouped[c] = []));
+  job.items.forEach((it) => {
+    if (!grouped[it.category]) grouped[it.category] = [];
+    grouped[it.category].push(it);
+  });
+  const nonEmptyCats = job.categories.filter((c) => grouped[c] && grouped[c].length > 0);
+
+  const sections = nonEmptyCats
+    .map((cat) => {
+      const rows = grouped[cat]
+        .map((it) => {
+          const comm =
+            COMM_METHODS.filter(({ key }) => it.communicated[key].done)
+              .map(({ label, key }) => `${label} ${it.communicated[key].date}`)
+              .join(", ") || "Not communicated";
+          const marked = it.markedOut.done ? `Marked out ${it.markedOut.date}` : "Not marked out";
+          return `<div class="item">
+            <div class="item-text">${escapeHtml(it.item)}</div>
+            <div class="item-meta">${it.sub ? escapeHtml(it.sub) + " &middot; " : ""}${it.source ? escapeHtml(it.source) : ""}</div>
+            ${it.notes ? `<div class="item-notes">${escapeHtml(it.notes)}</div>` : ""}
+            <div class="item-status">${marked} &middot; ${escapeHtml(comm)}</div>
+          </div>`;
+        })
+        .join("");
+      return `<section><div class="category">${escapeHtml(cat)}</div>${rows}</section>`;
+    })
+    .join("");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(job.address)} — Scope Deviation Log</title>
+<style>
+  body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #26312B; max-width: 640px; margin: 30px auto; padding: 0 16px; }
+  .eyebrow { font-size: 11px; font-weight: 800; letter-spacing: 0.18em; color: #B85C1F; font-family: ui-monospace, monospace; }
+  h1 { font-size: 24px; font-weight: 800; text-transform: uppercase; margin: 4px 0; }
+  .meta { font-size: 12px; opacity: 0.6; font-family: ui-monospace, monospace; margin-bottom: 20px; }
+  .category { font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; margin: 20px 0 8px; font-family: ui-monospace, monospace; border-bottom: 2px solid #26312B; padding-bottom: 4px; }
+  .item { border: 1px solid #CFC7B4; border-left: 4px solid #B85C1F; border-radius: 6px; padding: 10px 12px; margin-bottom: 8px; }
+  .item-text { font-size: 14px; font-weight: 600; }
+  .item-meta { font-size: 12px; opacity: 0.6; margin-top: 3px; }
+  .item-notes { font-size: 12px; opacity: 0.6; font-style: italic; margin-top: 4px; }
+  .item-status { font-size: 12px; font-family: ui-monospace, monospace; opacity: 0.75; margin-top: 6px; }
+  .print-btn { margin-bottom: 20px; padding: 10px 16px; font-size: 13px; font-weight: 700; border: 1.5px solid #26312B; border-radius: 6px; background: none; cursor: pointer; }
+  @media print { .print-btn { display: none; } }
+</style>
+</head>
+<body>
+  <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+  <div class="eyebrow">SCOPE DEVIATION LOG</div>
+  <h1>${escapeHtml(job.address)}</h1>
+  <div class="meta">Exported ${todayStr()}</div>
+  ${sections || "<p>No items yet.</p>"}
+</body>
+</html>`;
+}
+
+function buildPlainTextSummary(job) {
+  const grouped = {};
+  job.categories.forEach((c) => (grouped[c] = []));
+  job.items.forEach((it) => {
+    if (!grouped[it.category]) grouped[it.category] = [];
+    grouped[it.category].push(it);
+  });
+  const nonEmptyCats = job.categories.filter((c) => grouped[c] && grouped[c].length > 0);
+  let out = `${job.address} — Scope Deviation Log (${todayStr()})\n`;
+  nonEmptyCats.forEach((cat) => {
+    out += `\n${cat.toUpperCase()}\n`;
+    grouped[cat].forEach((it) => {
+      const comm =
+        COMM_METHODS.filter(({ key }) => it.communicated[key].done)
+          .map(({ label, key }) => `${label} ${it.communicated[key].date}`)
+          .join(", ") || "not communicated";
+      const marked = it.markedOut.done ? `marked out ${it.markedOut.date}` : "not marked out";
+      out += `- ${it.item}${it.sub ? ` (${it.sub})` : ""} — ${marked}; ${comm}\n`;
+    });
+  });
+  return out;
+}
+
+function ScopeApp() {
+  const [screen, setScreen] = useState("list"); // list | job
+  const [jobs, setJobs] = useState([]);
+  const [loadingJobs, setLoadingJobs] = useState(true);
+  const [activeSlug, setActiveSlug] = useState(null);
+  const [activeJob, setActiveJob] = useState(null);
+  const [newAddress, setNewAddress] = useState("");
+  const [dictation, setDictation] = useState("");
+  const [mode, setMode] = useState("intake"); // intake | followup
+  const [processing, setProcessing] = useState(false);
+  const [error, setError] = useState(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [jobLoading, setJobLoading] = useState(false);
+  const [jobLoadError, setJobLoadError] = useState(null);
+  const printRef = useRef(null);
+
+  // Load job list on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await withRetry(() => backendGet({ action: "listJobs" }));
+        setJobs(result || []);
+      } catch (e) {
+        setJobs([]);
+      } finally {
+        setLoadingJobs(false);
+      }
+    })();
+  }, []);
+
+  const loadJob = async (slug) => {
+    setJobLoading(true);
+    setJobLoadError(null);
+    try {
+      const result = await withRetry(() => backendGet({ action: "getJob", slug }));
+      setActiveJob(result);
+    } catch (e) {
+      setJobLoadError(`Couldn't load this job (${e.message || "backend error"}).`);
+    } finally {
+      setJobLoading(false);
+    }
+  };
+
+  const saveJob = async (job) => {
+    const updated = { ...job, lastUpdated: new Date().toISOString() };
+    setActiveJob(updated);
+    try {
+      await withRetry(() => backendPost("saveJob", { job: updated }));
+    } catch (e) {
+      setError("Couldn't save changes.");
+    }
+  };
+
+  const openJob = async (slug) => {
+    setActiveSlug(slug);
+    setScreen("job");
+    setDictation("");
+    setError(null);
+    await loadJob(slug);
+  };
+
+  const createJob = async () => {
+    if (!newAddress.trim()) return;
+    const slug = slugify(newAddress) + "-" + newId().slice(0, 4);
+    const job = {
+      slug,
+      address: newAddress.trim(),
+      createdAt: new Date().toISOString(),
+      categories: [...DEFAULT_CATEGORIES],
+      items: [],
+    };
+    try {
+      await withRetry(() => backendPost("createJob", { job }));
+    } catch (e) {
+      setError("Couldn't create job.");
+      return;
+    }
+    setJobs([{ slug, address: job.address, createdAt: job.createdAt }, ...jobs]);
+    setNewAddress("");
+    await openJob(slug);
+  };
+
+  const deleteJob = async (slug, e) => {
+    e.stopPropagation();
+    if (!window.confirm("Delete this job and all its items? This can't be undone.")) return;
+    try {
+      await withRetry(() => backendPost("deleteJob", { slug }));
+      setJobs(jobs.filter((j) => j.slug !== slug));
+    } catch (e) {
+      setError("Couldn't delete job.");
+    }
+  };
+
+
+
+  const processIntake = async () => {
+    if (!dictation.trim() || !activeJob) return;
+    setProcessing(true);
+    setError(null);
+    try {
+      const result = await withRetry(() =>
+        backendPost("parseIntake", {
+          dictation,
+          categories: activeJob.categories,
+        })
+      );
+      const items = (Array.isArray(result) ? result : []).map((r) => ({
+        id: newId(),
+        category: r.category || "General",
+        sub: r.sub || null,
+        item: r.item || "",
+        source: r.source || null,
+        notes: r.notes || null,
+        markedOut: { done: false, date: null },
+        communicated: defaultCommunicated(),
+        createdAt: new Date().toISOString(),
+      }));
+      const newCategories = [...activeJob.categories];
+      items.forEach((it) => {
+        if (!newCategories.includes(it.category)) newCategories.push(it.category);
+      });
+      await saveJob({ ...activeJob, categories: newCategories, items: [...activeJob.items, ...items] });
+      setDictation("");
+    } catch (e) {
+      setError(`Couldn't process that (${e.message || "unknown error"}) — try again, or add items manually below.`);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const processFollowup = async () => {
+    if (!dictation.trim() || !activeJob) return;
+    setProcessing(true);
+    setError(null);
+    try {
+      const itemSummaries = activeJob.items.map((it) => ({
+        id: it.id,
+        category: it.category,
+        sub: it.sub,
+        item: it.item,
+        markedOut: it.markedOut.done,
+        communicated: Object.fromEntries(Object.entries(it.communicated).map(([k, v]) => [k, v.done])),
+      }));
+      const result = await withRetry(() => backendPost("parseFollowup", { dictation, itemSummaries }));
+      const updates = result.updates || [];
+      const updatedItems = activeJob.items.map((it) => {
+        const u = updates.find((x) => x.id === it.id);
+        if (!u) return it;
+        const next = { ...it };
+        if (u.markedOut !== undefined) {
+          next.markedOut = { done: u.markedOut, date: u.markedOut ? todayStr() : it.markedOut.date };
+        }
+        if (Array.isArray(u.communicatedMethods) && u.communicatedMethods.length) {
+          next.communicated = { ...next.communicated };
+          u.communicatedMethods.forEach((m) => {
+            if (next.communicated[m]) next.communicated[m] = { done: true, date: todayStr() };
+          });
+        }
+        if (u.note) next.notes = next.notes ? `${next.notes} — ${u.note}` : u.note;
+        return next;
+      });
+      await saveJob({ ...activeJob, items: updatedItems });
+      if (result.unmatched && result.unmatched.length) {
+        setError(`Some things weren't matched to an existing item: ${result.unmatched.join("; ")}`);
+      }
+      setDictation("");
+    } catch (e) {
+      setError(`Couldn't process that (${e.message || "unknown error"}) — try again.`);
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const toggleMarkedOut = (id) => {
+    const items = activeJob.items.map((it) =>
+      it.id === id
+        ? { ...it, markedOut: { done: !it.markedOut.done, date: !it.markedOut.done ? todayStr() : it.markedOut.date } }
+        : it
+    );
+    saveJob({ ...activeJob, items });
+  };
+
+  const toggleCommunicated = (id, method) => {
+    const items = activeJob.items.map((it) => {
+      if (it.id !== id) return it;
+      const current = it.communicated[method];
+      return {
+        ...it,
+        communicated: {
+          ...it.communicated,
+          [method]: { done: !current.done, date: !current.done ? todayStr() : current.date },
+        },
+      };
+    });
+    saveJob({ ...activeJob, items });
+  };
+
+  const deleteItem = (id) => {
+    const items = activeJob.items.filter((it) => it.id !== id);
+    saveJob({ ...activeJob, items });
+  };
+
+  const addManualItem = (category, item, sub) => {
+    if (!item.trim()) return;
+    const newItem = {
+      id: newId(),
+      category,
+      sub: sub || null,
+      item: item.trim(),
+      source: null,
+      notes: null,
+      markedOut: { done: false, date: null },
+      communicated: defaultCommunicated(),
+      createdAt: new Date().toISOString(),
+    };
+    saveJob({ ...activeJob, items: [...activeJob.items, newItem] });
+  };
+
+  const [copyStatus, setCopyStatus] = useState(null);
+
+  const handleExport = () => {
+    try {
+      const html = buildPrintableHtml(activeJob);
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, "_blank");
+      if (!win) {
+        setError("Pop-up blocked — allow pop-ups for this page, or use Copy Summary below instead.");
+      }
+    } catch (e) {
+      setError("Export failed to open — try Copy Summary instead.");
+    }
+  };
+
+  const handleCopySummary = async () => {
+    try {
+      const text = buildPlainTextSummary(activeJob);
+      await navigator.clipboard.writeText(text);
+      setCopyStatus("Copied");
+      setTimeout(() => setCopyStatus(null), 2000);
+    } catch (e) {
+      setError("Couldn't copy — your browser may be blocking clipboard access.");
+    }
+  };
+
+  return (
+    <div style={styles.app}>
+      <style>{PRINT_CSS}</style>
+      {screen === "list" && (
+        <JobListScreen
+          jobs={jobs}
+          loading={loadingJobs}
+          newAddress={newAddress}
+          setNewAddress={setNewAddress}
+          createJob={createJob}
+          openJob={openJob}
+          deleteJob={deleteJob}
+        />
+      )}
+      {screen === "job" && !activeJob && (
+        <div style={styles.listWrap} className="no-print">
+          <button style={styles.backBtn} onClick={() => setScreen("list")}>
+            <ArrowLeft size={18} /> Jobs
+          </button>
+          <div style={styles.emptyState}>
+            {jobLoading ? (
+              <Loader2 className="spin" size={20} />
+            ) : (
+              <div>
+                <div style={{ marginBottom: 10 }}>
+                  {jobLoadError || "Something went wrong opening this job."}
+                </div>
+                <button style={styles.primaryBtn} onClick={() => loadJob(activeSlug)}>
+                  Try again
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {screen === "job" && activeJob && (
+        <JobScreen
+          job={activeJob}
+          dictation={dictation}
+          setDictation={setDictation}
+          mode={mode}
+          setMode={setMode}
+          processing={processing}
+          error={error}
+          onProcess={mode === "intake" ? processIntake : processFollowup}
+          onBack={() => {
+            setScreen("list");
+            setActiveJob(null);
+          }}
+          onToggleMarkedOut={toggleMarkedOut}
+          onToggleCommunicated={toggleCommunicated}
+          onDeleteItem={deleteItem}
+          onExport={handleExport}
+          onCopySummary={handleCopySummary}
+          copyStatus={copyStatus}
+          manualOpen={manualOpen}
+          setManualOpen={setManualOpen}
+          addManualItem={addManualItem}
+        />
+      )}
+    </div>
+  );
+}
+
+function JobListScreen({ jobs, loading, newAddress, setNewAddress, createJob, openJob, deleteJob }) {
+  return (
+    <div style={styles.listWrap} className="no-print">
+      <header style={styles.listHeader}>
+        <div style={styles.eyebrow}>FIELD LOG</div>
+        <h1 style={styles.title}>Scope Deviations</h1>
+        <div style={styles.subtitle}>Sold-job changes, by trade, one page per address.</div>
+      </header>
+
+      <div style={styles.newJobRow}>
+        <input
+          style={styles.input}
+          placeholder="New job address"
+          value={newAddress}
+          onChange={(e) => setNewAddress(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && createJob()}
+        />
+        <button style={styles.primaryBtn} onClick={createJob}>
+          <Plus size={18} strokeWidth={2.5} />
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={styles.emptyState}>
+          <Loader2 className="spin" size={20} />
+        </div>
+      ) : jobs.length === 0 ? (
+        <div style={styles.emptyState}>
+          No jobs yet. Add an address above to start marking one out.
+        </div>
+      ) : (
+        <div style={styles.jobList}>
+          {jobs.map((j) => (
+            <div key={j.slug} style={styles.jobCard} onClick={() => openJob(j.slug)}>
+              <div style={styles.jobCardTag}>SOLD</div>
+              <div style={styles.jobCardAddress}>{j.address}</div>
+              <button style={styles.deleteBtn} onClick={(e) => deleteJob(j.slug, e)}>
+                <Trash2 size={16} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function JobScreen({
+  job,
+  dictation,
+  setDictation,
+  mode,
+  setMode,
+  processing,
+  error,
+  onProcess,
+  onBack,
+  onToggleMarkedOut,
+  onToggleCommunicated,
+  onDeleteItem,
+  onExport,
+  onCopySummary,
+  copyStatus,
+  manualOpen,
+  setManualOpen,
+  addManualItem,
+}) {
+  const grouped = {};
+  job.categories.forEach((c) => (grouped[c] = []));
+  job.items.forEach((it) => {
+    if (!grouped[it.category]) grouped[it.category] = [];
+    grouped[it.category].push(it);
+  });
+  const nonEmptyCats = job.categories.filter((c) => grouped[c] && grouped[c].length > 0);
+  const pendingCount = job.items.filter((it) => itemStatus(it) === "pending").length;
+
+  return (
+    <div style={styles.jobWrap}>
+      <div className="print-only" style={styles.printHeader}>
+        <div style={styles.eyebrow}>SCOPE DEVIATION LOG</div>
+        <h1 style={styles.printAddress}>{job.address}</h1>
+        <div style={styles.printMeta}>Printed {todayStr()}</div>
+      </div>
+
+      <header style={styles.jobHeader} className="no-print">
+        <button style={styles.backBtn} onClick={onBack}>
+          <ArrowLeft size={18} /> Jobs
+        </button>
+        <div style={styles.jobHeaderAddress}>{job.address}</div>
+        <button style={styles.printBtn} onClick={onCopySummary}>
+          {copyStatus || "Copy"}
+        </button>
+        <button style={styles.printBtn} onClick={onExport}>
+          <Printer size={16} /> Export
+        </button>
+      </header>
+
+      <div style={styles.statsRow} className="no-print">
+        <div style={styles.statPill}>
+          <span style={{ ...styles.statDot, background: STATUS_COLORS.pending.border }} />
+          {pendingCount} pending
+        </div>
+        <div style={styles.statPill}>{job.items.length} total items</div>
+      </div>
+
+      <div style={styles.dictationBlock} className="no-print">
+        <div style={styles.modeToggle}>
+          <button
+            style={mode === "intake" ? styles.modeBtnActive : styles.modeBtn}
+            onClick={() => setMode("intake")}
+          >
+            Read contract
+          </button>
+          <button
+            style={mode === "followup" ? styles.modeBtnActive : styles.modeBtn}
+            onClick={() => setMode("followup")}
+          >
+            Log follow-up
+          </button>
+        </div>
+        <textarea
+          style={styles.textarea}
+          placeholder={
+            mode === "intake"
+              ? "Talk through the contract or amendment — every deviation you find, who it belongs to..."
+              : "Talk through what you did — marked it out, emailed the sub, logged it in CoConstruct..."
+          }
+          value={dictation}
+          onChange={(e) => setDictation(e.target.value)}
+          rows={4}
+        />
+        <div style={styles.dictationFooter}>
+          <div style={styles.micHint}>
+            <Mic size={14} /> Tap your keyboard's mic to dictate
+          </div>
+          <button
+            style={{ ...styles.primaryBtn, ...styles.processBtn }}
+            onClick={onProcess}
+            disabled={processing || !dictation.trim()}
+          >
+            {processing ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+            {processing ? "Processing" : "Process"}
+          </button>
+        </div>
+        {error && (
+          <div style={styles.errorBox}>
+            <AlertTriangle size={14} /> {error}
+          </div>
+        )}
+      </div>
+
+      {nonEmptyCats.length === 0 ? (
+        <div style={styles.emptyState} className="no-print">
+          No items yet. Read through the contract above to build your preliminary list.
+        </div>
+      ) : (
+        nonEmptyCats.map((cat) => (
+          <CategorySection
+            key={cat}
+            category={cat}
+            items={grouped[cat]}
+            onToggleMarkedOut={onToggleMarkedOut}
+            onToggleCommunicated={onToggleCommunicated}
+            onDeleteItem={onDeleteItem}
+          />
+        ))
+      )}
+
+      <div className="no-print">
+        <button style={styles.manualToggle} onClick={() => setManualOpen(!manualOpen)}>
+          <Plus size={14} /> Add item manually <ChevronDown size={14} style={{ transform: manualOpen ? "rotate(180deg)" : "none" }} />
+        </button>
+        {manualOpen && <ManualAddForm categories={job.categories} onAdd={addManualItem} />}
+      </div>
+    </div>
+  );
+}
+
+function CategorySection({ category, items, onToggleMarkedOut, onToggleCommunicated, onDeleteItem }) {
+  return (
+    <section style={styles.category}>
+      <div style={styles.categoryTag}>
+        <span style={styles.categoryTagBar} />
+        {category}
+      </div>
+      {items.map((it) => (
+        <ItemRow
+          key={it.id}
+          item={it}
+          onToggleMarkedOut={onToggleMarkedOut}
+          onToggleCommunicated={onToggleCommunicated}
+          onDeleteItem={onDeleteItem}
+        />
+      ))}
+    </section>
+  );
+}
+
+function ItemRow({ item, onToggleMarkedOut, onToggleCommunicated, onDeleteItem }) {
+  const status = itemStatus(item);
+  const colors = STATUS_COLORS[status];
+  return (
+    <div style={{ ...styles.itemRow, borderLeftColor: colors.border }}>
+      <div style={styles.itemMain}>
+        <div style={styles.itemText}>{item.item}</div>
+        <div style={styles.itemMeta}>
+          {item.sub && <span style={styles.itemSub}>{item.sub}</span>}
+          {item.source && <span style={styles.itemSource}>{item.source}</span>}
+        </div>
+        {item.notes && <div style={styles.itemNotes}>{item.notes}</div>}
+      </div>
+      <div style={styles.itemActions} className="no-print">
+        <button
+          style={item.markedOut.done ? styles.chipActive : styles.chip}
+          onClick={() => onToggleMarkedOut(item.id)}
+        >
+          {item.markedOut.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
+          Marked out{item.markedOut.done && item.markedOut.date ? ` · ${item.markedOut.date}` : ""}
+        </button>
+        <div style={styles.commChips}>
+          {COMM_METHODS.map(({ key, label }) => {
+            const state = item.communicated[key];
+            return (
+              <button
+                key={key}
+                style={state.done ? styles.chipActive : styles.chip}
+                onClick={() => onToggleCommunicated(item.id, key)}
+              >
+                {state.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
+                {label}
+                {state.done && state.date ? ` · ${state.date}` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <button style={styles.itemDelete} onClick={() => onDeleteItem(item.id)}>
+          <Trash2 size={13} />
+        </button>
+      </div>
+      <div className="print-only" style={styles.printStatus}>
+        {item.markedOut.done ? `Marked out ${item.markedOut.date}` : "Not marked out"}
+        {" · "}
+        {COMM_METHODS.filter(({ key }) => item.communicated[key].done)
+          .map(({ label, key }) => `${label} ${item.communicated[key].date}`)
+          .join(", ") || "Not communicated"}
+      </div>
+    </div>
+  );
+}
+
+function ManualAddForm({ categories, onAdd }) {
+  const [category, setCategory] = useState(categories[0]);
+  const [item, setItem] = useState("");
+  const [sub, setSub] = useState("");
+  return (
+    <div style={styles.manualForm}>
+      <select style={styles.select} value={category} onChange={(e) => setCategory(e.target.value)}>
+        {categories.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </select>
+      <input style={styles.input} placeholder="Item description" value={item} onChange={(e) => setItem(e.target.value)} />
+      <input style={styles.input} placeholder="Sub / contact (optional)" value={sub} onChange={(e) => setSub(e.target.value)} />
+      <button
+        style={styles.primaryBtn}
+        onClick={() => {
+          onAdd(category, item, sub);
+          setItem("");
+          setSub("");
+        }}
+      >
+        Add
+      </button>
+    </div>
+  );
+}
+
+const PRINT_CSS = `
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .print-only { display: none; }
+  @media print {
+    .no-print { display: none !important; }
+    .print-only { display: block !important; }
+    body { background: white !important; }
+  }
+`;
+
+const INK = "#E2E8F0";
+const PAPER = "#08090a";
+const PAPER_RAISED = "#0f131b";
+const LINE = "#232a38";
+const ORANGE = "#B85C1F";
+
+const styles = {
+  app: {
+    minHeight: "100vh",
+    background: PAPER,
+    color: INK,
+    fontFamily:
+      "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+    paddingBottom: 40,
+  },
+  listWrap: { maxWidth: 640, margin: "0 auto", padding: "28px 18px" },
+  listHeader: { marginBottom: 24, borderBottom: `2px solid ${INK}`, paddingBottom: 16 },
+  eyebrow: {
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: "0.18em",
+    color: ORANGE,
+    fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
+  },
+  title: {
+    fontSize: 30,
+    fontWeight: 800,
+    letterSpacing: "-0.02em",
+    margin: "4px 0 6px",
+    textTransform: "uppercase",
+  },
+  subtitle: { fontSize: 14, opacity: 0.65 },
+  newJobRow: { display: "flex", gap: 8, marginBottom: 20 },
+  input: {
+    flex: 1,
+    padding: "12px 14px",
+    fontSize: 15,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 6,
+    background: PAPER_RAISED,
+    color: INK,
+    outline: "none",
+  },
+  select: {
+    padding: "12px 14px",
+    fontSize: 15,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 6,
+    background: PAPER_RAISED,
+    color: INK,
+  },
+  primaryBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    padding: "12px 16px",
+    fontSize: 14,
+    fontWeight: 700,
+    border: "none",
+    borderRadius: 6,
+    background: INK,
+    color: PAPER,
+    cursor: "pointer",
+  },
+  emptyState: {
+    padding: "40px 16px",
+    textAlign: "center",
+    fontSize: 14,
+    opacity: 0.55,
+    display: "flex",
+    justifyContent: "center",
+  },
+  jobList: { display: "flex", flexDirection: "column", gap: 10 },
+  jobCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "14px 14px",
+    background: PAPER_RAISED,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 8,
+    cursor: "pointer",
+  },
+  jobCardTag: {
+    fontSize: 10,
+    fontWeight: 800,
+    letterSpacing: "0.1em",
+    color: "#5C8A66",
+    border: "1.5px solid #5C8A66",
+    borderRadius: 4,
+    padding: "2px 6px",
+    fontFamily: "ui-monospace, monospace",
+  },
+  jobCardAddress: { flex: 1, fontSize: 15, fontWeight: 600 },
+  deleteBtn: { background: "none", border: "none", opacity: 0.4, cursor: "pointer", padding: 4 },
+
+  jobWrap: { maxWidth: 640, margin: "0 auto", padding: "20px 16px" },
+  printHeader: { marginBottom: 20, borderBottom: `2px solid ${INK}`, paddingBottom: 10 },
+  printAddress: { fontSize: 24, fontWeight: 800, textTransform: "uppercase", margin: "4px 0" },
+  printMeta: { fontSize: 12, opacity: 0.6, fontFamily: "ui-monospace, monospace" },
+  jobHeader: { display: "flex", alignItems: "center", gap: 10, marginBottom: 12 },
+  backBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    background: "none",
+    border: "none",
+    color: INK,
+    opacity: 0.7,
+    fontSize: 13,
+    cursor: "pointer",
+    padding: "6px 4px",
+  },
+  jobHeaderAddress: { flex: 1, fontSize: 17, fontWeight: 800 },
+  printBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    fontSize: 12,
+    fontWeight: 700,
+    padding: "8px 10px",
+    border: `1.5px solid ${INK}`,
+    borderRadius: 6,
+    background: "none",
+    color: INK,
+    cursor: "pointer",
+  },
+  statsRow: { display: "flex", gap: 8, marginBottom: 16 },
+  statPill: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    fontSize: 12,
+    fontWeight: 700,
+    padding: "5px 10px",
+    borderRadius: 20,
+    background: PAPER_RAISED,
+    border: `1px solid ${LINE}`,
+  },
+  statDot: { width: 7, height: 7, borderRadius: "50%" },
+
+  dictationBlock: {
+    background: PAPER_RAISED,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 22,
+  },
+  modeToggle: { display: "flex", gap: 6, marginBottom: 10 },
+  modeBtn: {
+    flex: 1,
+    padding: "8px 10px",
+    fontSize: 12.5,
+    fontWeight: 700,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 6,
+    background: "transparent",
+    color: INK,
+    opacity: 0.55,
+    cursor: "pointer",
+  },
+  modeBtnActive: {
+    flex: 1,
+    padding: "8px 10px",
+    fontSize: 12.5,
+    fontWeight: 700,
+    border: `1.5px solid ${INK}`,
+    borderRadius: 6,
+    background: INK,
+    color: PAPER,
+    cursor: "pointer",
+  },
+  textarea: {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: 12,
+    fontSize: 15,
+    border: `1.5px solid ${LINE}`,
+    borderRadius: 8,
+    background: PAPER,
+    color: INK,
+    outline: "none",
+    resize: "vertical",
+    fontFamily: "inherit",
+  },
+  dictationFooter: { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 8 },
+  micHint: { display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, opacity: 0.5 },
+  processBtn: { padding: "9px 16px" },
+  errorBox: {
+    marginTop: 8,
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 6,
+    fontSize: 12.5,
+    color: "#8A4A16",
+    background: "#F4E3D3",
+    border: "1px solid #D98A3D",
+    borderRadius: 6,
+    padding: "8px 10px",
+  },
+
+  category: { marginBottom: 22 },
+  categoryTag: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    fontSize: 12,
+    fontWeight: 800,
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    marginBottom: 8,
+    fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace",
+  },
+  categoryTagBar: { width: 16, height: 3, background: ORANGE, display: "inline-block" },
+
+  itemRow: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 8,
+    background: PAPER_RAISED,
+    border: `1px solid ${LINE}`,
+    borderLeft: "4px solid",
+    borderRadius: 6,
+    padding: "10px 12px",
+    marginBottom: 8,
+  },
+  itemMain: {},
+  itemText: { fontSize: 14.5, fontWeight: 600, lineHeight: 1.35 },
+  itemMeta: { display: "flex", gap: 8, marginTop: 3 },
+  itemSub: { fontSize: 12, fontWeight: 700, opacity: 0.65 },
+  itemSource: { fontSize: 12, opacity: 0.45, fontFamily: "ui-monospace, monospace" },
+  itemNotes: { fontSize: 12.5, opacity: 0.6, marginTop: 4, fontStyle: "italic" },
+  itemActions: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" },
+  commChips: { display: "flex", gap: 6, flexWrap: "wrap" },
+  chip: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 11.5,
+    fontWeight: 600,
+    padding: "5px 8px",
+    borderRadius: 20,
+    border: `1px solid ${LINE}`,
+    background: "transparent",
+    color: INK,
+    opacity: 0.55,
+    cursor: "pointer",
+  },
+  chipActive: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    fontSize: 11.5,
+    fontWeight: 700,
+    padding: "5px 8px",
+    borderRadius: 20,
+    border: "1px solid #5C8A66",
+    background: "#DCE8DD",
+    color: "#2C4A32",
+    cursor: "pointer",
+  },
+  itemDelete: { marginLeft: "auto", background: "none", border: "none", opacity: 0.35, cursor: "pointer", padding: 4 },
+  printStatus: { fontSize: 12, fontFamily: "ui-monospace, monospace", opacity: 0.7 },
+
+  manualToggle: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    fontSize: 12.5,
+    fontWeight: 700,
+    opacity: 0.6,
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    padding: "8px 0",
+  },
+  manualForm: { display: "flex", flexDirection: "column", gap: 8, marginTop: 8, marginBottom: 20 },
+};
+
+
+// ==================== SHARED SHELL ====================
+
+const SHELL = {
+  app: { minHeight:'100vh', backgroundColor:'#08090a', color:'#e5e7eb', fontFamily:"'DM Mono','Courier New',monospace" },
+  header: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'13px 16px', borderBottom:'1px solid #232a38', position:'sticky', top:0, zIndex:200, background:'#08090a' },
+  logo: { fontFamily:"'DM Mono',monospace", fontSize:15, fontWeight:500, color:'#8f97a3', letterSpacing:'0.1em', cursor:'pointer' },
+  menuBtn: { background:'none', border:'1px solid #232a38', color:'#8f97a3', width:32, height:32, borderRadius:4, cursor:'pointer', fontSize:14 },
+  drawer: { position:'sticky', top:49, zIndex:190, background:'#0f131b', borderBottom:'1px solid #232a38', display:'flex', flexDirection:'column' },
+  drawerItem: { padding:'12px 16px', fontSize:13, color:'#8f97a3', cursor:'pointer', borderTop:'1px solid #1a2028' },
+  drawerItemActive: { color:'#5c7a99', fontWeight:500 },
+  body: { padding:'20px 16px', maxWidth:760, margin:'0 auto' },
+};
+
+function Home({ houses, loaded, onOpenMilestones, onOpenScope }) {
+  if (!loaded) return <div style={{padding:'60px 16px', textAlign:'center', color:'#5f6773', fontFamily:"'DM Mono',monospace", letterSpacing:'0.1em'}}>LOADING…</div>;
+  return (
+    <div>
+      <div style={{fontSize:13, fontWeight:500, color:'#8f97a3', marginBottom:12, letterSpacing:'0.02em'}}>Closings</div>
+      {houses.length===0 && <div style={{padding:'40px 16px', textAlign:'center', color:'#5f6773', fontSize:13}}>No active homes with closing dates yet.</div>}
+      {houses.length>0 && (
+        <div style={{display:'flex', flexDirection:'column', borderRadius:12, overflow:'hidden', border:'1px solid #232a38'}}>
+          {houses.map((h,i)=>{
+            const days = daysTo(h.milestones.closing);
+            const done = MILESTONES.filter(m=>h.milestones[m.key]).length;
+            const pct = Math.round((done/MILESTONES.length)*100);
+            const past = days!==null && days<0, urg = days!==null && days>=0 && days<=7;
+            const dotColor = past ? '#f87171' : urg ? '#5c7a99' : '#374151';
+            const wt = h.milestones.walkthrough;
+            const cleanNote = h.milestones.finalClean ? `Clean scheduled ${fmtShort(h.milestones.finalClean)}` : 'Clean not scheduled';
+            return (
+              <div key={h.id} style={{padding:'14px 16px', background:'#0f131b', borderTop: i===0 ? 'none' : '1px solid #232a38'}}>
+                <div style={{display:'flex', alignItems:'center', gap:12}}>
+                  <div style={{width:6, height:6, borderRadius:'50%', background:dotColor, flexShrink:0}} />
+                  <div style={{flex:1, minWidth:0, fontSize:14, fontWeight:500, color:'#e5e7eb'}}>{h.address}</div>
+                  <div style={{fontSize:12, color:'#8f97a3'}}>{days===null?'—':past?`${Math.abs(days)}d ago`:days===0?'TODAY':`${days}d`}</div>
+                </div>
+                <div style={{fontSize:11, color:'#5f6773', marginLeft:18, marginTop:4}}>
+                  {pct}% complete · WT {wt?fmtShort(wt):'not set'} · {cleanNote}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div style={{display:'flex', flexDirection:'column', gap:8, marginTop:20}}>
+        <div style={{display:'flex', alignItems:'center', gap:12, padding:'14px 16px', borderRadius:12, border:'1px solid #232a38', cursor:'pointer'}} onClick={onOpenMilestones}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:14, fontWeight:500, color:'#e5e7eb'}}>Milestones</div>
+            <div style={{fontSize:11, color:'#5f6773'}}>{houses.length} active home{houses.length===1?'':'s'}</div>
+          </div>
+          <span style={{color:'#5f6773', fontSize:14}}>›</span>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:12, padding:'14px 16px', borderRadius:12, border:'1px solid #232a38', cursor:'pointer'}} onClick={onOpenScope}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:14, fontWeight:500, color:'#e5e7eb'}}>Scope changes</div>
+            <div style={{fontSize:11, color:'#5f6773'}}>Open scope tracker</div>
+          </div>
+          <span style={{color:'#5f6773', fontSize:14}}>›</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Shell() {
+  const [view, setView] = useState('home');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [houses, setHouses] = useState([]);
+  const [housesLoaded, setHousesLoaded] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      if (configured()) {
+        try {
+          const data = await sheetsLoad();
+          if (data) { setHouses(data); setHousesLoaded(true); return; }
+        } catch (e) {}
+      }
+      try { const s = localStorage.getItem('bt'); if (s) setHouses(JSON.parse(s)); } catch (e) {}
+      setHousesLoaded(true);
+    }
+    load();
+  }, []);
+
+  const active = houses.filter(h => !h.archived);
+  const byClose = [...active].sort((a,b)=>{
+    if(!a.milestones.closing && !b.milestones.closing) return 0;
+    if(!a.milestones.closing) return 1;
+    if(!b.milestones.closing) return -1;
+    return new Date(a.milestones.closing) - new Date(b.milestones.closing);
+  });
+
+  const NAV = [['home','Home'],['milestones','Milestones'],['scope','Scope changes']];
+
+  return (
+    <div style={SHELL.app}>
+      <div style={SHELL.header}>
+        <span style={SHELL.logo} onClick={()=>{setView('home');setMenuOpen(false);}}>BUILDTRACK</span>
+        <button style={SHELL.menuBtn} onClick={()=>setMenuOpen(m=>!m)} aria-label="Menu">☰</button>
+      </div>
+      {menuOpen && (
+        <div style={SHELL.drawer}>
+          {NAV.map(([v,label])=>(
+            <div key={v}
+              style={{...SHELL.drawerItem, ...(view===v?SHELL.drawerItemActive:{})}}
+              onClick={()=>{setView(v);setMenuOpen(false);}}>
+              {label}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={SHELL.body}>
+        {view==='home' && <Home houses={byClose} loaded={housesLoaded} onOpenMilestones={()=>setView('milestones')} onOpenScope={()=>setView('scope')} />}
+        {view==='milestones' && <MilestonesApp />}
+        {view==='scope' && <ScopeApp />}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Shell />);
+
+</script>
+</body>
+</html>
