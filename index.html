@@ -242,13 +242,50 @@ function MilestonesApp({ view, setView, selId, setSelId }) {
 }
 
 // ── Dashboard ────────────────────────────────────────────────────
+const SORT_OPTIONS = [
+  ['entry', 'Entry order'],
+  ['address', 'Address (A–Z)'],
+  ['closing', 'Closing date (soonest)'],
+  ['pct', '% complete (highest first)'],
+];
+
+function sortHouses(houses, sortBy) {
+  const withPct = houses.map(h => ({
+    h,
+    pct: Math.round((MILESTONES.filter(m=>h.milestones[m.key]).length / MILESTONES.length) * 100),
+  }));
+  if (sortBy === 'address') {
+    withPct.sort((a,b) => (a.h.address||'').localeCompare(b.h.address||''));
+  } else if (sortBy === 'closing') {
+    withPct.sort((a,b) => {
+      const ac = a.h.milestones.closing, bc = b.h.milestones.closing;
+      if (!ac && !bc) return 0;
+      if (!ac) return 1;
+      if (!bc) return -1;
+      return new Date(ac) - new Date(bc);
+    });
+  } else if (sortBy === 'pct') {
+    withPct.sort((a,b) => b.pct - a.pct);
+  }
+  return withPct.map(x => x.h);
+}
+
 function Dashboard({ houses, onSelect, onAdd }) {
+  const [sortBy, setSortBy] = useState('entry');
+  const sorted = sortBy === 'entry' ? houses : sortHouses(houses, sortBy);
   return (
     <div>
       <div style={S.ph}><h1 style={S.pt}>Active Homes <span style={S.dc}>{houses.length}</span></h1><button style={S.pBtn} onClick={onAdd}>+ NEW HOME</button></div>
+      {houses.length>0 && (
+        <div style={{marginBottom:14}}>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={S.sortSelect}>
+            {SORT_OPTIONS.map(([v,label])=><option key={v} value={v}>{label}</option>)}
+          </select>
+        </div>
+      )}
       {houses.length===0&&<Empty icon="🏠" text="No active homes. Tap + NEW HOME to get started." />}
       <div style={S.stack}>
-        {houses.map(h=>{
+        {sorted.map(h=>{
           const done=MILESTONES.filter(m=>h.milestones[m.key]).length;
           const pct=Math.round((done/MILESTONES.length)*100);
           const days=daysTo(h.milestones.closing);
@@ -544,6 +581,7 @@ const S = {
   ph:      {display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:20},
   pt:      {fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:700,color:'#f3f4f6',letterSpacing:'0.05em',margin:0},
   dc:      {fontSize:16,color:'#4b5563',marginLeft:8},
+  sortSelect:{backgroundColor:'#0f131b',border:'1px solid #232a38',borderRadius:4,color:'#8f97a3',padding:'6px 10px',fontSize:11,fontFamily:"'DM Mono',monospace",colorScheme:'dark'},
   pBtn:    {backgroundColor:'#5c7a99',color:'#08090a',border:'none',padding:'9px 18px',borderRadius:4,fontSize:11,fontWeight:700,letterSpacing:'0.12em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
   gBtn:    {background:'none',border:'1px solid #232a38',color:'#9ca3af',padding:'7px 14px',borderRadius:4,fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
   dBtn:    {background:'none',border:'1px solid rgba(239,68,68,0.35)',color:'#f87171',padding:'7px 14px',borderRadius:4,fontSize:11,letterSpacing:'0.1em',cursor:'pointer',fontFamily:"'DM Mono',monospace"},
@@ -1851,7 +1889,7 @@ function Shell() {
     <div style={SHELL.app}>
       <div style={SHELL.header}>
         <div style={{display:'flex',alignItems:'center',gap:10}}>
-          {section!=='home' && (
+          {section!=='home' && !(section==='milestones' && milestonesView==='detail') && (
             <button style={SHELL.backBtn} onClick={()=>goto('home')} aria-label="Back to home">← BACK</button>
           )}
           <span style={SHELL.logo} onClick={()=>goto('home')}>BUILDTRACK</span>
