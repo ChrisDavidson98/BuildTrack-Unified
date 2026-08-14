@@ -146,10 +146,8 @@ function Tog({ on, onClick }) {
 }
 
 // ── App ──────────────────────────────────────────────────────────
-function MilestonesApp() {
+function MilestonesApp({ view, setView, selId, setSelId }) {
   const [houses, setHouses]   = useState([]);
-  const [view, setView]       = useState('dashboard');
-  const [selId, setSelId]     = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [loaded, setLoaded]   = useState(false);
   const [sync, setSync]       = useState('idle');
@@ -211,8 +209,6 @@ function MilestonesApp() {
     return bu-au;
   });
   const totalOwed = active.reduce((s,h)=>s+bonusFor(h).filter(b=>!h.bonuses[b.key]&&eligible(h,b)).length,0);
-  const navView   = view==='detail'?(sel?.archived?'archive':'dashboard'):view;
-  const TABS      = [['dashboard','HOMES'],['closing','CLOSINGS'],['bonuses','BONUSES'],['archive','ARCHIVE']];
   const syncMsgs  = {saving:'saving…',synced:'✓ synced',error:'sync error — check connection',offline:'offline — changes saved locally'};
 
   if (!loaded) return <div style={{...S.app,display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -221,19 +217,6 @@ function MilestonesApp() {
 
   return (
     <div style={S.app}>
-      <div style={S.header}>
-        <div style={S.logo}>BUILDTRACK</div>
-        <div style={S.nav}>
-          {TABS.map(([v,label])=>(
-            <button key={v} style={{...S.navBtn,...(navView===v?S.navActive:{})}} onClick={()=>setView(v)}>
-              {label}
-              {v==='archive'&&archived.length>0&&<span style={{...S.dot,background:'#a78bfa'}}>{archived.length}</span>}
-              {v==='bonuses'&&totalOwed>0&&<span style={{...S.dot,background:'#5c7a99',color:'#08090a'}}>{totalOwed}</span>}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {sync!=='idle'&&syncMsgs[sync]&&(
         <div style={{...S.syncBar,...(sync==='saving'?S.syncSaving:sync==='synced'?S.syncOk:S.syncErr)}}>
           {syncMsgs[sync]}
@@ -1750,17 +1733,25 @@ const SHELL = {
   app: { minHeight:'100vh', backgroundColor:'#08090a', color:'#e5e7eb', fontFamily:"'DM Mono','Courier New',monospace" },
   header: { display:'flex', alignItems:'center', justifyContent:'space-between', padding:'13px 16px', borderBottom:'1px solid #232a38', position:'sticky', top:0, zIndex:200, background:'#08090a' },
   logo: { fontFamily:"'DM Mono',monospace", fontSize:15, fontWeight:500, color:'#8f97a3', letterSpacing:'0.1em', cursor:'pointer' },
+  backBtn: { background:'none', border:'1px solid #232a38', color:'#8f97a3', padding:'6px 10px', borderRadius:4, fontSize:10, letterSpacing:'0.08em', cursor:'pointer', fontFamily:"'DM Mono',monospace" },
   menuBtn: { background:'none', border:'1px solid #232a38', color:'#8f97a3', width:32, height:32, borderRadius:4, cursor:'pointer', fontSize:14 },
   drawer: { position:'sticky', top:49, zIndex:190, background:'#0f131b', borderBottom:'1px solid #232a38', display:'flex', flexDirection:'column' },
-  drawerItem: { padding:'12px 16px', fontSize:13, color:'#8f97a3', cursor:'pointer', borderTop:'1px solid #1a2028' },
-  drawerItemActive: { color:'#5c7a99', fontWeight:500 },
+  drawerItem: { padding:'12px 16px', fontSize:13, color:'#8f97a3', cursor:'pointer', borderTop:'1px solid #1a2028', borderBottom:'2px solid transparent' },
+  drawerItemActive: { color:'#f3f4f6', fontWeight:500, borderBottom:'2px solid #f3f4f6' },
   body: { padding:'20px 16px', maxWidth:760, margin:'0 auto' },
 };
 
-function Home({ houses, loaded, onOpenMilestones, onOpenScope }) {
+function Home({ houses, loaded, onSelectHouse, onOpenMilestones, onOpenScope }) {
   if (!loaded) return <div style={{padding:'60px 16px', textAlign:'center', color:'#5f6773', fontFamily:"'DM Mono',monospace", letterSpacing:'0.1em'}}>LOADING…</div>;
   return (
     <div>
+      <div style={{display:'flex', alignItems:'center', gap:12, padding:'14px 16px', borderRadius:12, border:'1px solid #232a38', cursor:'pointer', marginBottom:20}} onClick={onOpenScope}>
+        <div style={{flex:1}}>
+          <div style={{fontSize:14, fontWeight:500, color:'#e5e7eb'}}>Scope changes</div>
+          <div style={{fontSize:11, color:'#5f6773'}}>Open scope tracker</div>
+        </div>
+        <span style={{color:'#5f6773', fontSize:14}}>›</span>
+      </div>
       <div style={{fontSize:13, fontWeight:500, color:'#8f97a3', marginBottom:12, letterSpacing:'0.02em'}}>Closings</div>
       {houses.length===0 && <div style={{padding:'40px 16px', textAlign:'center', color:'#5f6773', fontSize:13}}>No active homes with closing dates yet.</div>}
       {houses.length>0 && (
@@ -1774,7 +1765,7 @@ function Home({ houses, loaded, onOpenMilestones, onOpenScope }) {
             const wt = h.milestones.walkthrough;
             const cleanNote = h.milestones.finalClean ? `Clean scheduled ${fmtShort(h.milestones.finalClean)}` : 'Clean not scheduled';
             return (
-              <div key={h.id} style={{padding:'14px 16px', background:'#0f131b', borderTop: i===0 ? 'none' : '1px solid #232a38'}}>
+              <div key={h.id} style={{padding:'14px 16px', background:'#0f131b', borderTop: i===0 ? 'none' : '1px solid #232a38', cursor:'pointer'}} onClick={()=>onSelectHouse(h.id)}>
                 <div style={{display:'flex', alignItems:'center', gap:12}}>
                   <div style={{width:6, height:6, borderRadius:'50%', background:dotColor, flexShrink:0}} />
                   <div style={{flex:1, minWidth:0, fontSize:14, fontWeight:500, color:'#e5e7eb'}}>{h.address}</div>
@@ -1796,20 +1787,15 @@ function Home({ houses, loaded, onOpenMilestones, onOpenScope }) {
           </div>
           <span style={{color:'#5f6773', fontSize:14}}>›</span>
         </div>
-        <div style={{display:'flex', alignItems:'center', gap:12, padding:'14px 16px', borderRadius:12, border:'1px solid #232a38', cursor:'pointer'}} onClick={onOpenScope}>
-          <div style={{flex:1}}>
-            <div style={{fontSize:14, fontWeight:500, color:'#e5e7eb'}}>Scope changes</div>
-            <div style={{fontSize:11, color:'#5f6773'}}>Open scope tracker</div>
-          </div>
-          <span style={{color:'#5f6773', fontSize:14}}>›</span>
-        </div>
       </div>
     </div>
   );
 }
 
 function Shell() {
-  const [view, setView] = useState('home');
+  const [section, setSection] = useState('home'); // 'home' | 'milestones' | 'scope'
+  const [milestonesView, setMilestonesView] = useState('dashboard'); // dashboard|detail|closing|bonuses|archive
+  const [milestonesSelId, setMilestonesSelId] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [houses, setHouses] = useState([]);
   const [housesLoaded, setHousesLoaded] = useState(false);
@@ -1836,29 +1822,57 @@ function Shell() {
     return new Date(a.milestones.closing) - new Date(b.milestones.closing);
   });
 
-  const NAV = [['home','Home'],['milestones','Milestones'],['scope','Scope changes']];
+  const goto = (sec, mView) => {
+    setSection(sec);
+    if (mView) setMilestonesView(mView);
+    setMenuOpen(false);
+  };
+
+  const openHouse = (id) => {
+    setMilestonesSelId(id);
+    setMilestonesView('detail');
+    setSection('milestones');
+    setMenuOpen(false);
+  };
+
+  const NAV = [
+    ['home', 'Home', () => goto('home')],
+    ['milestones', 'Milestones', () => goto('milestones', 'dashboard')],
+    ['closing', 'Closing', () => goto('milestones', 'closing')],
+    ['bonuses', 'Bonuses', () => goto('milestones', 'bonuses')],
+    ['archive', 'Archive', () => goto('milestones', 'archive')],
+    ['scope', 'Scope changes', () => goto('scope')],
+  ];
+  const activeKey = section==='home' ? 'home'
+    : section==='scope' ? 'scope'
+    : (milestonesView==='closing' ? 'closing' : milestonesView==='bonuses' ? 'bonuses' : milestonesView==='archive' ? 'archive' : 'milestones');
 
   return (
     <div style={SHELL.app}>
       <div style={SHELL.header}>
-        <span style={SHELL.logo} onClick={()=>{setView('home');setMenuOpen(false);}}>BUILDTRACK</span>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          {section!=='home' && (
+            <button style={SHELL.backBtn} onClick={()=>goto('home')} aria-label="Back to home">← BACK</button>
+          )}
+          <span style={SHELL.logo} onClick={()=>goto('home')}>BUILDTRACK</span>
+        </div>
         <button style={SHELL.menuBtn} onClick={()=>setMenuOpen(m=>!m)} aria-label="Menu">☰</button>
       </div>
       {menuOpen && (
         <div style={SHELL.drawer}>
-          {NAV.map(([v,label])=>(
-            <div key={v}
-              style={{...SHELL.drawerItem, ...(view===v?SHELL.drawerItemActive:{})}}
-              onClick={()=>{setView(v);setMenuOpen(false);}}>
+          {NAV.map(([key,label,onClick])=>(
+            <div key={key}
+              style={{...SHELL.drawerItem, ...(activeKey===key?SHELL.drawerItemActive:{})}}
+              onClick={onClick}>
               {label}
             </div>
           ))}
         </div>
       )}
       <div style={SHELL.body}>
-        {view==='home' && <Home houses={byClose} loaded={housesLoaded} onOpenMilestones={()=>setView('milestones')} onOpenScope={()=>setView('scope')} />}
-        {view==='milestones' && <MilestonesApp />}
-        {view==='scope' && <ScopeApp />}
+        {section==='home' && <Home houses={byClose} loaded={housesLoaded} onSelectHouse={openHouse} onOpenMilestones={()=>goto('milestones','dashboard')} onOpenScope={()=>goto('scope')} />}
+        {section==='milestones' && <MilestonesApp view={milestonesView} setView={setMilestonesView} selId={milestonesSelId} setSelId={setMilestonesSelId} />}
+        {section==='scope' && <ScopeApp />}
       </div>
     </div>
   );
