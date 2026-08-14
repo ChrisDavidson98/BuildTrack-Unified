@@ -692,6 +692,7 @@ const CheckCircle2 = (p) => <Icon {...p}><path d="M21.8 10A10 10 0 1 1 17 3.3" /
 const Circle = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /></Icon>;
 const ChevronDown = (p) => <Icon {...p}><polyline points="6 9 12 15 18 9" /></Icon>;
 const AlertTriangle = (p) => <Icon {...p}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></Icon>;
+const Pencil = (p) => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /><path d="m15 5 4 4" /></Icon>;
 
 // ---- Your deployed Apps Script Web app ----
 // Paste the APP_TOKEN value you set in Script Properties below.
@@ -1087,6 +1088,11 @@ function ScopeApp() {
     saveJob({ ...activeJob, items });
   };
 
+  const editItem = (id, updates) => {
+    const items = activeJob.items.map((it) => (it.id === id ? { ...it, ...updates } : it));
+    saveJob({ ...activeJob, items });
+  };
+
   const addManualItem = (category, item, sub) => {
     if (!item.trim()) return;
     const newItem = {
@@ -1182,6 +1188,7 @@ function ScopeApp() {
           onToggleMarkedOut={toggleMarkedOut}
           onToggleCommunicated={toggleCommunicated}
           onDeleteItem={deleteItem}
+          onEditItem={editItem}
           onExport={handleExport}
           onCopySummary={handleCopySummary}
           copyStatus={copyStatus}
@@ -1254,6 +1261,7 @@ function JobScreen({
   onToggleMarkedOut,
   onToggleCommunicated,
   onDeleteItem,
+  onEditItem,
   onExport,
   onCopySummary,
   copyStatus,
@@ -1358,6 +1366,7 @@ function JobScreen({
             onToggleMarkedOut={onToggleMarkedOut}
             onToggleCommunicated={onToggleCommunicated}
             onDeleteItem={onDeleteItem}
+            onEditItem={onEditItem}
           />
         ))
       )}
@@ -1372,7 +1381,7 @@ function JobScreen({
   );
 }
 
-function CategorySection({ category, items, onToggleMarkedOut, onToggleCommunicated, onDeleteItem }) {
+function CategorySection({ category, items, onToggleMarkedOut, onToggleCommunicated, onDeleteItem, onEditItem }) {
   return (
     <section style={styles.category}>
       <div style={styles.categoryTag}>
@@ -1386,53 +1395,128 @@ function CategorySection({ category, items, onToggleMarkedOut, onToggleCommunica
           onToggleMarkedOut={onToggleMarkedOut}
           onToggleCommunicated={onToggleCommunicated}
           onDeleteItem={onDeleteItem}
+          onEditItem={onEditItem}
         />
       ))}
     </section>
   );
 }
 
-function ItemRow({ item, onToggleMarkedOut, onToggleCommunicated, onDeleteItem }) {
+function ItemRow({ item, onToggleMarkedOut, onToggleCommunicated, onDeleteItem, onEditItem }) {
   const status = itemStatus(item);
   const colors = STATUS_COLORS[status];
+  const [editing, setEditing] = useState(false);
+  const [draftItem, setDraftItem] = useState(item.item);
+  const [draftSub, setDraftSub] = useState(item.sub || "");
+  const [draftNotes, setDraftNotes] = useState(item.notes || "");
+
+  const startEdit = () => {
+    setDraftItem(item.item);
+    setDraftSub(item.sub || "");
+    setDraftNotes(item.notes || "");
+    setEditing(true);
+  };
+
+  const save = () => {
+    if (!draftItem.trim()) return;
+    onEditItem(item.id, {
+      item: draftItem.trim(),
+      sub: draftSub.trim() || null,
+      notes: draftNotes.trim() || null,
+    });
+    setEditing(false);
+  };
+
+  const cancel = () => setEditing(false);
+
+  const handleKey = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      save();
+    }
+    if (e.key === "Escape") cancel();
+  };
+
   return (
     <div style={{ ...styles.itemRow, borderLeftColor: colors.border }}>
       <div style={styles.itemMain}>
-        <div style={styles.itemText}>{item.item}</div>
-        <div style={styles.itemMeta}>
-          {item.sub && <span style={styles.itemSub}>{item.sub}</span>}
-          {item.source && <span style={styles.itemSource}>{item.source}</span>}
-        </div>
-        {item.notes && <div style={styles.itemNotes}>{item.notes}</div>}
-      </div>
-      <div style={styles.itemActions} className="no-print">
-        <button
-          style={item.markedOut.done ? styles.chipActive : styles.chip}
-          onClick={() => onToggleMarkedOut(item.id)}
-        >
-          {item.markedOut.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
-          Marked out{item.markedOut.done && item.markedOut.date ? ` · ${item.markedOut.date}` : ""}
-        </button>
-        <div style={styles.commChips}>
-          {COMM_METHODS.map(({ key, label }) => {
-            const state = item.communicated[key];
-            return (
-              <button
-                key={key}
-                style={state.done ? styles.chipActive : styles.chip}
-                onClick={() => onToggleCommunicated(item.id, key)}
-              >
-                {state.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
-                {label}
-                {state.done && state.date ? ` · ${state.date}` : ""}
+        {editing ? (
+          <div style={styles.editBlock} className="no-print">
+            <input
+              style={styles.editInput}
+              value={draftItem}
+              onChange={(e) => setDraftItem(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Item description"
+              autoFocus
+            />
+            <input
+              style={styles.editInput}
+              value={draftSub}
+              onChange={(e) => setDraftSub(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Sub / contact (optional)"
+            />
+            <input
+              style={styles.editInput}
+              value={draftNotes}
+              onChange={(e) => setDraftNotes(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="Notes (optional)"
+            />
+            <div style={styles.editBtnRow}>
+              <button style={styles.editSaveBtn} onClick={save} disabled={!draftItem.trim()}>
+                Save
               </button>
-            );
-          })}
-        </div>
-        <button style={styles.itemDelete} onClick={() => onDeleteItem(item.id)}>
-          <Trash2 size={13} />
-        </button>
+              <button style={styles.editCancelBtn} onClick={cancel}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={styles.itemText}>{item.item}</div>
+            <div style={styles.itemMeta}>
+              {item.sub && <span style={styles.itemSub}>{item.sub}</span>}
+              {item.source && <span style={styles.itemSource}>{item.source}</span>}
+            </div>
+            {item.notes && <div style={styles.itemNotes}>{item.notes}</div>}
+          </>
+        )}
       </div>
+      {!editing && (
+        <div style={styles.itemActions} className="no-print">
+          <button
+            style={item.markedOut.done ? styles.chipActive : styles.chip}
+            onClick={() => onToggleMarkedOut(item.id)}
+          >
+            {item.markedOut.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
+            Marked out{item.markedOut.done && item.markedOut.date ? ` · ${item.markedOut.date}` : ""}
+          </button>
+          <div style={styles.commChips}>
+            {COMM_METHODS.map(({ key, label }) => {
+              const state = item.communicated[key];
+              return (
+                <button
+                  key={key}
+                  style={state.done ? styles.chipActive : styles.chip}
+                  onClick={() => onToggleCommunicated(item.id, key)}
+                >
+                  {state.done ? <CheckCircle2 size={13} /> : <Circle size={13} />}
+                  {label}
+                  {state.done && state.date ? ` · ${state.date}` : ""}
+                </button>
+              );
+            })}
+          </div>
+          <button style={styles.itemEdit} onClick={startEdit} title="Edit wording">
+            <Pencil size={13} />
+          </button>
+          <button style={styles.itemDelete} onClick={() => onDeleteItem(item.id)}>
+            <Trash2 size={13} />
+          </button>
+        </div>
+      )}
       <div className="print-only" style={styles.printStatus}>
         {item.markedOut.done ? `Marked out ${item.markedOut.date}` : "Not marked out"}
         {" · "}
@@ -1746,8 +1830,45 @@ const styles = {
     color: "#2C4A32",
     cursor: "pointer",
   },
+  itemEdit: { background: "none", border: "none", opacity: 0.35, cursor: "pointer", padding: 4 },
   itemDelete: { marginLeft: "auto", background: "none", border: "none", opacity: 0.35, cursor: "pointer", padding: 4 },
   printStatus: { fontSize: 12, fontFamily: "ui-monospace, monospace", opacity: 0.7 },
+
+  editBlock: { display: "flex", flexDirection: "column", gap: 6 },
+  editInput: {
+    width: "100%",
+    fontSize: 14,
+    fontFamily: "inherit",
+    padding: "7px 9px",
+    borderRadius: 5,
+    border: `1.5px solid ${ORANGE}`,
+    background: PAPER_RAISED,
+    color: INK,
+    outline: "none",
+    boxSizing: "border-box",
+  },
+  editBtnRow: { display: "flex", gap: 8, marginTop: 2 },
+  editSaveBtn: {
+    fontSize: 12,
+    fontWeight: 700,
+    padding: "6px 12px",
+    borderRadius: 5,
+    border: "none",
+    background: ORANGE,
+    color: "#fff",
+    cursor: "pointer",
+  },
+  editCancelBtn: {
+    fontSize: 12,
+    fontWeight: 700,
+    padding: "6px 12px",
+    borderRadius: 5,
+    border: `1px solid ${LINE}`,
+    background: "transparent",
+    color: INK,
+    opacity: 0.7,
+    cursor: "pointer",
+  },
 
   manualToggle: {
     display: "flex",
