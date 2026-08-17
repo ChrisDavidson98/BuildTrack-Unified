@@ -917,6 +917,7 @@ function ScopeApp() {
   const [jobLoading, setJobLoading] = useState(false);
   const [jobLoadError, setJobLoadError] = useState(null);
   const printRef = useRef(null);
+  const saveQueueRef = useRef(Promise.resolve());
 
   // Load job list on mount
   useEffect(() => {
@@ -945,14 +946,22 @@ function ScopeApp() {
     }
   };
 
-  const saveJob = async (job) => {
-    const updated = { ...job, lastUpdated: new Date().toISOString() };
-    setActiveJob(updated);
-    try {
-      await withRetry(() => backendPost("saveJob", { job: updated }));
-    } catch (e) {
-      setError("Couldn't save changes.");
-    }
+  // Saves must (a) always build on the latest job state, even if several
+  // edits happen back-to-back before any network round-trip completes, and
+  // (b) reach the backend in order, one at a time — otherwise a later save
+  // computed from stale state can land after an earlier one and silently
+  // overwrite it (saveJob on the backend fully replaces a job's Items rows).
+  // The functional setActiveJob form guarantees (a); chaining onto
+  // saveQueueRef guarantees (b).
+  const saveJob = (updater) => {
+    setActiveJob((prev) => {
+      const base = typeof updater === "function" ? updater(prev) : updater;
+      const updated = { ...base, lastUpdated: new Date().toISOString() };
+      saveQueueRef.current = saveQueueRef.current
+        .then(() => withRetry(() => backendPost("saveJob", { job: updated })))
+        .catch(() => setError("Couldn't save changes."));
+      return updated;
+    });
   };
 
   const openJob = async (slug) => {
@@ -1019,11 +1028,13 @@ function ScopeApp() {
         communicated: defaultCommunicated(),
         createdAt: new Date().toISOString(),
       }));
-      const newCategories = [...activeJob.categories];
-      items.forEach((it) => {
-        if (!newCategories.includes(it.category)) newCategories.push(it.category);
+      saveJob((prev) => {
+        const mergedCategories = [...prev.categories];
+        items.forEach((it) => {
+          if (!mergedCategories.includes(it.category)) mergedCategories.push(it.category);
+        });
+        return { ...prev, categories: mergedCategories, items: [...prev.items, ...items] };
       });
-      await saveJob({ ...activeJob, categories: newCategories, items: [...activeJob.items, ...items] });
       setDictation("");
     } catch (e) {
       setError(`Couldn't process that (${e.message || "unknown error"}) — try again, or add items manually below.`);
@@ -1047,23 +1058,25 @@ function ScopeApp() {
       }));
       const result = await withRetry(() => backendPost("parseFollowup", { dictation, itemSummaries }));
       const updates = result.updates || [];
-      const updatedItems = activeJob.items.map((it) => {
-        const u = updates.find((x) => x.id === it.id);
-        if (!u) return it;
-        const next = { ...it };
-        if (u.markedOut !== undefined) {
-          next.markedOut = { done: u.markedOut, date: u.markedOut ? todayStr() : it.markedOut.date };
-        }
-        if (Array.isArray(u.communicatedMethods) && u.communicatedMethods.length) {
-          next.communicated = { ...next.communicated };
-          u.communicatedMethods.forEach((m) => {
-            if (next.communicated[m]) next.communicated[m] = { done: true, date: todayStr() };
-          });
-        }
-        if (u.note) next.notes = next.notes ? `${next.notes} — ${u.note}` : u.note;
-        return next;
-      });
-      await saveJob({ ...activeJob, items: updatedItems });
+      saveJob((prev) => ({
+        ...prev,
+        items: prev.items.map((it) => {
+          const u = updates.find((x) => x.id === it.id);
+          if (!u) return it;
+          const next = { ...it };
+          if (u.markedOut !== undefined) {
+            next.markedOut = { done: u.markedOut, date: u.markedOut ? todayStr() : it.markedOut.date };
+          }
+          if (Array.isArray(u.communicatedMethods) && u.communicatedMethods.length) {
+            next.communicated = { ...next.communicated };
+            u.communicatedMethods.forEach((m) => {
+              if (next.communicated[m]) next.communicated[m] = { done: true, date: todayStr() };
+            });
+          }
+          if (u.note) next.notes = next.notes ? `${next.notes} — ${u.note}` : u.note;
+          return next;
+        }),
+      }));
       if (result.unmatched && result.unmatched.length) {
         setError(`Some things weren't matched to an existing item: ${result.unmatched.join("; ")}`);
       }
@@ -1076,37 +1089,42 @@ function ScopeApp() {
   };
 
   const toggleMarkedOut = (id) => {
-    const items = activeJob.items.map((it) =>
-      it.id === id
-        ? { ...it, markedOut: { done: !it.markedOut.done, date: !it.markedOut.done ? todayStr() : it.markedOut.date } }
-        : it
-    );
-    saveJob({ ...activeJob, items });
+    saveJob((prev) => ({
+      ...prev,
+      items: prev.items.map((it) =>
+        it.id === id
+          ? { ...it, markedOut: { done: !it.markedOut.done, date: !it.markedOut.done ? todayStr() : it.markedOut.date } }
+          : it
+      ),
+    }));
   };
 
   const toggleCommunicated = (id, method) => {
-    const items = activeJob.items.map((it) => {
-      if (it.id !== id) return it;
-      const current = it.communicated[method];
-      return {
-        ...it,
-        communicated: {
-          ...it.communicated,
-          [method]: { done: !current.done, date: !current.done ? todayStr() : current.date },
-        },
-      };
-    });
-    saveJob({ ...activeJob, items });
+    saveJob((prev) => ({
+      ...prev,
+      items: prev.items.map((it) => {
+        if (it.id !== id) return it;
+        const current = it.communicated[method];
+        return {
+          ...it,
+          communicated: {
+            ...it.communicated,
+            [method]: { done: !current.done, date: !current.done ? todayStr() : current.date },
+          },
+        };
+      }),
+    }));
   };
 
   const deleteItem = (id) => {
-    const items = activeJob.items.filter((it) => it.id !== id);
-    saveJob({ ...activeJob, items });
+    saveJob((prev) => ({ ...prev, items: prev.items.filter((it) => it.id !== id) }));
   };
 
   const editItem = (id, updates) => {
-    const items = activeJob.items.map((it) => (it.id === id ? { ...it, ...updates } : it));
-    saveJob({ ...activeJob, items });
+    saveJob((prev) => ({
+      ...prev,
+      items: prev.items.map((it) => (it.id === id ? { ...it, ...updates } : it)),
+    }));
   };
 
   const addManualItem = (category, item, sub) => {
@@ -1122,7 +1140,7 @@ function ScopeApp() {
       communicated: defaultCommunicated(),
       createdAt: new Date().toISOString(),
     };
-    saveJob({ ...activeJob, items: [...activeJob.items, newItem] });
+    saveJob((prev) => ({ ...prev, items: [...prev.items, newItem] }));
   };
 
   const [copyStatus, setCopyStatus] = useState(null);
