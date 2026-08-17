@@ -89,15 +89,31 @@ const fmtTime = t => { if (!t) return null; const [h,m]=t.split(':').map(Number)
 const bonusFor= h => BONUS_DEFS.filter(b => b.requiresBasement ? h.basementFinish : true);
 const eligible= (h,b)=> b.requiresBasement ? (h.basementFinish && !!h.milestones.closing && daysTo(h.milestones.closing)<=0) : (!!h.milestones[b.milestoneKey] && daysTo(h.milestones[b.milestoneKey])<=0);
 
-function icsUri(address, date, time) {
+function buildIcsContent(address, date, time) {
   const dt=date.replace(/-/g,''), st=time.replace(':','')+'00';
   const h=parseInt(time.split(':')[0]), mn=time.split(':')[1];
   const et=`${String((h+1)%24).padStart(2,'0')}${mn}00`;
-  const ics=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//BuildTrack//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//BuildTrack//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH',
     'BEGIN:VEVENT',`UID:${dt}-${st}-bt@local`,`DTSTART:${dt}T${st}`,`DTEND:${dt}T${et}`,
     `SUMMARY:Walkthrough \u2013 ${address}`,`DESCRIPTION:Home walkthrough at ${address}`,
     'END:VEVENT','END:VCALENDAR'].join('\r\n');
-  return `data:text/calendar;charset=utf-8;base64,${btoa(unescape(encodeURIComponent(ics)))}`;
+}
+
+// iOS Safari has gotten increasingly strict about following data: URI link taps
+// (a plain <a href="data:..."> tap can silently do nothing). A Blob object URL
+// triggered by a programmatic click is the reliable way to get the Calendar
+// add-event sheet to open instead.
+function downloadIcs(address, date, time) {
+  const ics = buildIcsContent(address, date, time);
+  const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `walkthrough-${date}.ics`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 // ── Sync ─────────────────────────────────────────────────────────
@@ -354,7 +370,7 @@ function Detail({ house:h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, on
           const isW=m.key==='walkthrough', isC=m.key==='finalClean', isCl=m.key==='closing';
           const tv=h.milestones.walkthroughTime||'';
           const days=(isCl||isW)?daysTo(val):null;
-          const cal=isW&&val&&tv?icsUri(h.address,val,tv):null;
+          const cal=isW&&val&&tv;
           return (
             <div key={m.key} style={{...S.mRow,...(isC&&set?S.mClean:{}),...(isCl&&set?S.mClose:{}),...(isW?S.mWalk:{})}}>
               <div style={S.mL}>
@@ -374,7 +390,7 @@ function Detail({ house:h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, on
                 {isW&&(
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
                     <input type="time" value={tv} onChange={e=>onUpdate('walkthroughTime',e.target.value)} style={{...S.dIn,width:110}} />
-                    {cal&&<a href={cal} style={S.calBtn}>📅 iPhone Cal</a>}
+                    {cal&&<button style={S.calBtn} onClick={()=>downloadIcs(h.address,val,tv)}>📅 iPhone Cal</button>}
                   </div>
                 )}
               </div>
