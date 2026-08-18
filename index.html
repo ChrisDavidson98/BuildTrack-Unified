@@ -59,6 +59,10 @@ const { useState, useEffect, useRef, useCallback } = React;
 //  CONFIGURE — paste your Apps Script URL between the quotes
 // ════════════════════════════════════════════════════════════════
 const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyOD3tU4NA9Rq8hBeCkgtcelQ6S5Ze1CQXfX2alC3bwgA-oB2sRCbzs_GJv1PWw5B6o/exec';
+// Separate Apps Script project/deployment from the Scope Deviation one below —
+// do not reuse that APP_TOKEN here. Set to match the APP_TOKEN Script Property
+// on *this* backend's deployment.
+const BUILDTRACK_APP_TOKEN = 'SKtGAUDUq61-3gNzf2W3bRU9efmobvE1';
 // ════════════════════════════════════════════════════════════════
 
 const MILESTONES = [
@@ -120,13 +124,20 @@ function downloadIcs(address, date, time) {
 const configured = () => SCRIPT_URL !== 'YOUR_SCRIPT_URL_HERE';
 
 async function sheetsLoad() {
-  const res = await fetch(`${SCRIPT_URL}?t=${Date.now()}`);
+  const res = await fetch(`${SCRIPT_URL}?t=${Date.now()}&token=${encodeURIComponent(BUILDTRACK_APP_TOKEN)}`);
   const data = await res.json();
+  // A bad/missing token comes back as {houses: [], error: "..."} — indistinguishable
+  // from a genuinely empty sheet by shape alone, so an unchecked error here would
+  // make the app show zero houses and overwrite the localStorage backup with
+  // nothing. Treat any error as a load failure instead, same as a network error.
+  if (data.error) throw new Error(data.error);
   return Array.isArray(data.houses) ? data.houses : null;
 }
 
 async function sheetsSave(houses) {
-  await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ houses }) });
+  const res = await fetch(SCRIPT_URL, { method:'POST', body: JSON.stringify({ houses, token: BUILDTRACK_APP_TOKEN }) });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Save failed');
 }
 
 // ── UI Primitives ────────────────────────────────────────────────
