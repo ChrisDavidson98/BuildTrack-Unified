@@ -987,6 +987,15 @@ function ScopeApp() {
     await loadJob(slug);
   };
 
+  // Deep-link support: ?scope=<slug> in the URL (set by the Portfolio
+  // Dashboard, after Shell has already switched to this section) opens that
+  // job directly instead of starting on the job list.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const slug = params.get("scope");
+    if (slug) openJob(slug);
+  }, []);
+
   const createJob = async () => {
     if (!newAddress.trim()) return;
     const slug = slugify(newAddress) + "-" + newId().slice(0, 4);
@@ -2042,6 +2051,18 @@ function Shell() {
     setSection('milestones');
     setMenuOpen(false);
   };
+
+  // Deep-link support: ?house=<id> or ?scope=<slug> in the URL (set by the
+  // Portfolio Dashboard) opens that specific record on load instead of the
+  // home screen. Purely additive — normal navigation is unaffected when
+  // neither parameter is present.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const houseId = params.get('house');
+    const scopeSlug = params.get('scope');
+    if (houseId) { openHouse(houseId); return; }
+    if (scopeSlug) { setSection('scope'); }
+  }, []);
 
   const NAV = [
     ['home', 'Home', () => goto('home')],
