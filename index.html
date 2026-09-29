@@ -98,6 +98,9 @@ input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(0.6); cur
 .tab { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; color: var(--text-4);
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; transition: color 0.15s; }
 .tab.on { color: var(--text); }
+/* Punch section: a slow tap on a phone must never read as a long-press text
+   selection (PunchTrack's CLAUDE.md, fixed there once already). */
+.pt button, .pt .btn { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: manipulation; }
 
 /* ── Bottom action bar ── */
 .actionbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 60; background: var(--bg); border-top: 1px solid var(--border); padding: 10px var(--gutter) calc(10px + var(--safe-b)); }
@@ -516,7 +519,7 @@ function KpiTile({ label, value, sub, attn }) {
 }
 
 // ── Today ────────────────────────────────────────────────────────
-function TodayScreen({ houses, jobs, onOpen }) {
+function TodayScreen({ houses, jobs, punchJobs, onOpen }) {
   const list = sortByClosing(houses);
   const date = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   const sjs = list.map(h => jobForHouse(h, jobs));
@@ -527,24 +530,28 @@ function TodayScreen({ houses, jobs, onOpen }) {
   const next = closingSoon[0];
   const nextDay = next ? new Date(next.milestones.closing + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' }) : null;
   const countsKnown = jobs.some(hasCounts);
+  const pjs = list.map(h => punchForHouse(h, punchJobs));
+  const punchKnown = punchJobs.some(ptHasCounts);
+  const punchOpen = pjs.filter(ptHasCounts).reduce((s, j) => s + j.open, 0);
+  const needVisit = list.filter((h, i) => ptVisitStatus(pjs[i], h.milestones.closing).overdue).length;
   return html`<div className="page stack">
     <div><div className="cap">${date}</div><h1 className="title">${list.length} active home${list.length === 1 ? '' : 's'}</h1></div>
     <div className="kpis">
       <${KpiTile} label="Scope open" value=${countsKnown ? open : '—'} sub=${!countsKnown ? 'Counts pending' : unsent > 0 ? `${unsent} unsent` : 'All sent'} attn=${unsent > 0} />
-      <${KpiTile} label="Punch open" value="—" sub="In PunchTrack" />
+      <${KpiTile} label="Punch open" value=${punchKnown ? punchOpen : '—'} sub=${!punchKnown ? 'Counts pending' : needVisit > 0 ? `${needVisit} need a visit` : 'All checked'} attn=${needVisit > 0} />
       <${KpiTile} label="Closing ≤14d" value=${closingSoon.length} sub=${next ? `next ${nextDay}` : 'None soon'} />
     </div>
     <div>
       <div className="section-head"><span className="label">Houses</span><span className="hint">MLS · Scope · Punch</span></div>
       ${list.length === 0 ? html`<${Empty} text="No active homes yet. Add one from the Houses tab." />` : html`
       <div className="card">
-        ${list.map((h, i) => { const sj = sjs[i], f = houseFact(h, sj); return html`
+        ${list.map((h, i) => { const sj = sjs[i], pj = pjs[i], f = houseFact(h, sj); return html`
           <div key=${h.id} className="row tap" onClick=${() => onOpen(h.id)}>
             <div className="grow"><div className="row-title">${h.address}</div><div className=${'row-meta' + (f.attn ? ' attn' : '')}>${f.text}</div></div>
             <div className="rings">
               <${Ring} label="Milestones" pct=${doneCount(h) / MILESTONES.length} attn=${milestonesNeedAttn(h)} />
               <${Ring} label="Scope" pct=${scopePct(sj)} attn=${scopeNeedsAttn(sj)} />
-              <${Ring} label="Punch" pct=${null} />
+              <${Ring} label="Punch" pct=${punchPct(pj)} attn=${ptVisitStatus(pj, h.milestones.closing).overdue} />
             </div>
           </div>`; })}
       </div>`}
@@ -638,14 +645,14 @@ function HousesScreen({ houses, filter, setFilter, sortBy, setSortBy, onOpen, on
 }
 
 // ── House page: title + Milestones · Scope · Punch ───────────────
-function HousePage({ house: h, sj, view, setView, onUpdateHouse, milestones, scope }) {
+function HousePage({ house: h, sj, pj, view, setView, onUpdateHouse, milestones, scope, punch }) {
   const d = daysTo(h.milestones.closing);
   const fact = houseFact(h, sj);
   const open = hasCounts(sj) ? sj.notSent + sj.sent : null;
   const tabs = [
     ['milestones', 'Milestones', `${doneCount(h)}/${MILESTONES.length}`, milestonesNeedAttn(h)],
     ['scope', 'Scope', open === null ? (sj ? '' : '—') : String(open), scopeNeedsAttn(sj)],
-    ['punch', 'Punch', '—', false],
+    ['punch', 'Punch', !pj ? '—' : ptHasCounts(pj) ? String(pj.open) : '', ptVisitStatus(pj, h.milestones.closing).overdue],
   ];
   return html`<div className="page stack">
     <div className="between" style=${{ alignItems: 'flex-start' }}>
@@ -665,7 +672,7 @@ function HousePage({ house: h, sj, view, setView, onUpdateHouse, milestones, sco
     </div>
     ${view === 'milestones' && milestones}
     ${view === 'scope' && scope}
-    ${view === 'punch' && html`<${PunchPanel} />`}
+    ${view === 'punch' && punch}
   </div>`;
 }
 
@@ -780,16 +787,534 @@ function BonusesScreen({ houses, onOpen, onToggleBonus }) {
   </div>`;
 }
 
-// ── Punch (PunchTrack is not merged yet — link out only) ─────────
+// ── Punch (PunchTrack, embedded) ─────────────────────────────────
+// PunchTrack keeps its own sheet and Apps Script backend — this tab just talks to
+// it directly, the same way the Scope tab talks to Scope Deviation's. Nothing is
+// copied into BuildTrack's sheet. (Spec: PunchTrack repo,
+// SPEC-Integration-and-LastChecked.md, Part 1.)
+//
+// PunchTrack's own page stays live for a trial period; both read and write the
+// same sheet, so either one shows the same data.
+//
+// Like every tool's token, this one is visible in page source by design — rate
+// limiting on PunchTrack's backend is the real protection (CLAUDE.md).
 const PUNCHTRACK_URL = 'https://chrisdavidson98.github.io/PunchTrack/';
-function PunchPanel() {
-  return html`<div className="panel stack" style=${{ gap: 14 }}>
-    <div className="cap">Punch lists still live in PunchTrack. They'll move in here in a later update.</div>
-    <a className="btn btn-primary btn-lg" href=${PUNCHTRACK_URL} target="_blank" rel="noopener">Open in PunchTrack<${I.external} size=${16} /></a>
+const PUNCH_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzHpWKcsT9w01rxs4wzrtfI-G2dbrp6LsPkX3x_W2KR8AyLFVsaszQBwUh6f4l01wr74g/exec';
+const PUNCH_APP_TOKEN = 'pWojP7euA3jW-E8XNYYr4TQZDPFfJxnh';
+
+async function punchGet(params) {
+  const url = new URL(PUNCH_SCRIPT_URL);
+  Object.entries({ token: PUNCH_APP_TOKEN, ...params }).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res = await fetch(url.toString());
+  const data = await res.json();
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+// text/plain on purpose — see backendPost above.
+async function punchPost(action, payload) {
+  const res = await fetch(PUNCH_SCRIPT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, token: PUNCH_APP_TOKEN, ...payload }),
+  });
+  const data = await res.json();
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+
+// Mirrors isPrieb in PunchTrack's Code.gs and index.html — keep all three alias
+// lists in sync. The in-house lane is chosen by assignee name.
+const PT_PRIEB_ALIASES = ['prieb', 'prieb homes', 'preib', 'in-house', 'in house', 'inhouse'];
+const ptIsPrieb = a => PT_PRIEB_ALIASES.indexOf(String(a || '').trim().toLowerCase()) !== -1;
+
+// PunchTrack dates arrive as "YYYY-MM-DD" or a full ISO timestamp; BuildTrack's
+// fmtDate/fmtShort want the plain day.
+const ptDay = d => { const s = String(d || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''; };
+const ptFmt = d => fmtDate(ptDay(d)) || '';
+const ptShort = d => { const s = ptDay(d); return s ? `${+s.slice(5, 7)}/${+s.slice(8, 10)}` : ''; };
+function ptToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+const ptIsWorkday = d => d.getDay() !== 0 && d.getDay() !== 6;
+function ptWorkdaysSince(day) {
+  if (!ptDay(day)) return null;
+  const d = new Date(ptDay(day) + 'T00:00:00'), today = new Date(ptToday() + 'T00:00:00');
+  let n = 0;
+  while (d < today) { d.setDate(d.getDate() + 1); if (ptIsWorkday(d)) n++; }
+  return n;
+}
+// Trade deadline = 2 working days before closing (same as PunchTrack's report).
+function ptWorkingDaysBefore(day, n) {
+  if (!ptDay(day)) return null;
+  const d = new Date(ptDay(day) + 'T00:00:00');
+  while (n > 0) { d.setDate(d.getDate() - 1); if (ptIsWorkday(d)) n--; }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// "Last checked" + overdue, same rule as PunchTrack's visitStatus (workdays only,
+// never flagged on a weekend):  >14d to close or no date → 3+ · 8–14d → 2+ · ≤7d → 1+
+// A badge only — it never reorders anything.
+function ptVisitStatus(pj, closing) {
+  if (!pj) return { last: '', label: '', overdue: false };
+  const visits = pj.visits || [];
+  const last = ptDay(pj.lastVisit) || (visits.length ? visits[visits.length - 1].date : '');
+  const since = last || ptDay(pj.createdAt);
+  const d = daysTo(ptDay(pj.closingDate) || ptDay(closing) || null);
+  const limit = d === null || d > 14 ? 3 : d >= 8 ? 2 : 1;
+  const ago = ptWorkdaysSince(since);
+  const overdue = !pj.archived && ptIsWorkday(new Date()) && ago !== null && ago >= limit;
+  const label = !last ? 'Never checked' : last === ptToday() ? 'Checked today' : `Last checked ${fmtShort(last)}`;
+  return { last, label, overdue };
+}
+const ptOpenTrail = (visits, id) => (visits || []).filter(v => (v.openItemIds || []).indexOf(id) !== -1).map(v => v.date);
+const ptHasCounts = pj => !!pj && typeof pj.total === 'number';
+const punchPct = pj => !ptHasCounts(pj) ? null : pj.total === 0 ? 0 : pj.done / pj.total;
+function ptSummarize(job) {
+  const total = job.items.length, done = job.items.filter(it => it.status === 'completed').length;
+  const visits = job.visits || [];
+  return { slug: job.slug, address: job.address, closingDate: job.closingDate, createdAt: job.createdAt, archived: job.archived,
+    lastVisit: job.lastVisit || (visits.length ? visits[visits.length - 1].date : ''), total, done, open: total - done };
+}
+// A house's walkthrough, matched on street address like its scope job.
+// An active job wins over an archived one at the same address.
+const punchForHouse = (h, jobs) => jobForHouse(h, jobs.filter(j => !j.archived)) || jobForHouse(h, jobs);
+
+// Helper-list text: plain "Room: Item" lines under each address, nothing else.
+const ptHelperList = houses => houses.map(h => [h.address, ...h.items.map(it => `• ${it.room}: ${it.item}`)].join('\n')).join('\n\n');
+
+// ── .md house archive (same format as PunchTrack's EXPORT) ─────────
+const PT_STATUS_LABEL = { assignable: 'open, not yet sent', sent: 'sent to trade, not confirmed done', self_assigned: 'open — Chris', flagged: 'flagged, needs a decision', completed: 'done' };
+function ptArchiveMarkdown(job, now = new Date()) {
+  const items = job.items || [], visits = job.visits || [];
+  const order = [], by = {};
+  items.forEach(it => { const w = it.assignee || 'Unassigned'; if (!by[w]) { by[w] = []; order.push(w); } by[w].push(it); });
+  const done = items.filter(it => it.status === 'completed').length;
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const lines = [
+    `# ${job.address}`,
+    `Walkthrough Items — generated ${ptFmt(today)}`,
+    job.closingDate ? `Closing ${ptFmt(job.closingDate)}` : 'Closing date not set',
+    `${items.length} items logged — ${done} done, ${items.length - done} still open`,
+    visits.length ? `${visits.length} visit${visits.length === 1 ? '' : 's'} logged — ${visits.map(v => ptFmt(v.date)).join(', ')}` : 'No visits logged',
+  ];
+  order.forEach(w => {
+    lines.push('', `## ${w}`);
+    by[w].forEach(it => {
+      const dates = [];
+      if (it.dateLogged) dates.push(`logged ${ptFmt(it.dateLogged)}`);
+      if (it.dateSent) dates.push(`sent ${ptFmt(it.dateSent)}`);
+      if (it.dateCompleted) dates.push(`completed ${ptFmt(it.dateCompleted)}`);
+      lines.push(`- ${it.room}: ${it.item} [${PT_STATUS_LABEL[it.status] || it.status || 'open'}]${dates.length ? ' — ' + dates.join(', ') : ''}`);
+      if (it.notes) lines.push(`  - ${it.notes}`);
+      const trail = ptOpenTrail(visits, it.id);
+      if (trail.length) lines.push(`  - still open on: ${trail.map(ptFmt).join(', ')}`);
+    });
+  });
+  return lines.join('\n') + '\n';
+}
+function ptDownloadMarkdown(job) {
+  const now = new Date(), p = n => String(n).padStart(2, '0');
+  const name = `${slugify(job.address)}-punchlist-${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}.md`;
+  const url = URL.createObjectURL(new Blob([ptArchiveMarkdown(job, now)], { type: 'text/markdown;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ── Punch job list (stale-while-revalidate, same rules as scope) ────
+const PUNCH_JOBS_KEY = 'bt_punch_jobs';
+function usePunchJobs() {
+  const [jobs, setJobsState] = useState(() => { try { return JSON.parse(localStorage.getItem(PUNCH_JOBS_KEY)); } catch (e) { return null; } });
+  const [loading, setLoading] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const setJobs = useCallback(fn => setJobsState(prev => {
+    const next = fn(prev || []);
+    try { localStorage.setItem(PUNCH_JOBS_KEY, JSON.stringify(next)); } catch (e) {}
+    return next;
+  }), []);
+  useEffect(() => {
+    (async () => {
+      try {
+        const result = await withRetry(() => punchGet({ action: 'listJobs' }));
+        setJobs(() => Array.isArray(result) ? result : []);
+      } catch (e) { setFailed(true); }
+      finally { setLoading(false); }
+    })();
+  }, []);
+  const updateSummary = useCallback(job => setJobs(js => js.map(j => j.slug === job.slug ? { ...j, ...ptSummarize(job) } : j)), []);
+  return { jobs: jobs || [], loading: loading && jobs === null, failed, setJobs, updateSummary };
+}
+
+// ── Punch: one house's walkthrough ───────────────────────────────
+function PtTrail({ dates }) {
+  const [open, setOpen] = useState(false);
+  if (!dates || !dates.length) return null;
+  const summary = dates.length === 1 ? `Seen open ${ptShort(dates[0])}`
+    : `Open on ${dates.length} visits · first ${ptShort(dates[0])} · last ${ptShort(dates[dates.length - 1])}`;
+  return html`<div className="row-meta" style=${{ cursor: dates.length > 1 ? 'pointer' : 'default' }} onClick=${e => { e.stopPropagation(); setOpen(o => !o); }}>
+    ${summary}${dates.length > 1 ? (open ? ' ▴' : ' ▾') : ''}
+    ${open && dates.length > 1 && html`<div style=${{ marginTop: 3 }}>${dates.map(ptShort).join(', ')}</div>`}
   </div>`;
 }
-function PunchScreen() {
-  return html`<div className="page stack"><h1 className="title">Punch</h1><${PunchPanel} /></div>`;
+
+function PtItemRow({ it, trail, onOpen, onComplete }) {
+  const done = it.status === 'completed';
+  // Flagged items can't be completed — they need a decision first (resolve in
+  // the item sheet), same as PunchTrack.
+  if (it.status === 'flagged') return html`<div className="row tap" onClick=${() => onOpen(it.id)}>
+    <span className="chk pending" aria-label="flagged" />
+    <div className="grow">
+      <div className="row-title sm">${it.room}: ${it.item}</div>
+      <div className="row-meta attn">${it.assignee} · tap to resolve</div>
+      ${it.notes && html`<div className="row-meta" style=${{ fontStyle: 'italic' }}>${it.notes}</div>`}
+      <${PtTrail} dates=${trail} />
+    </div>
+  </div>`;
+  return html`<div className=${'row tap' + (done ? ' item-done' : '')} onClick=${() => onOpen(it.id)}>
+    <button className=${'chk ' + (done ? 'done' : it.status === 'sent' ? 'sent' : 'off')} style=${{ padding: 0 }}
+      aria-label=${done ? 'Completed' : 'Mark complete'} onClick=${e => { e.stopPropagation(); if (!done) onComplete(it); }}>
+      ${done && html`<${I.check} size=${14} strokeWidth=${3} />`}</button>
+    <div className="grow">
+      <div className="row-title sm">${it.room}: ${it.item}</div>
+      ${it.notes && html`<div className="row-meta" style=${{ fontStyle: 'italic' }}>${it.notes}</div>`}
+      ${done && it.dateCompleted ? html`<div className="row-meta">Completed ${fmtShort(ptDay(it.dateCompleted))}</div>` : null}
+      <${PtTrail} dates=${trail} />
+    </div>
+  </div>`;
+}
+
+function PtItemSheet({ item, trail, onClose, onSave, onComplete, onReopen, onResolve }) {
+  const [room, setRoom] = useState(item.room || '');
+  const [text, setText] = useState(item.item || '');
+  const [assignee, setAssignee] = useState(item.assignee || '');
+  const [notes, setNotes] = useState(item.notes || '');
+  const [reassign, setReassign] = useState('');
+  const changed = room !== (item.room || '') || text !== (item.item || '') || assignee !== (item.assignee || '') || notes !== (item.notes || '');
+  const done = item.status === 'completed';
+  return html`<${Sheet} title=${null} onClose=${onClose}>
+    <div className="stack" style=${{ gap: 16 }}>
+      <div><div className="cap">${item.assignee} · ${PT_STATUS_LABEL[item.status] || item.status}</div>
+        <div className="row-title" style=${{ fontSize: 17, marginTop: 4 }}>${item.room}: ${item.item}</div>
+        ${trail.length > 0 && html`<div className="row-meta" style=${{ marginTop: 6 }}>Still open on: ${trail.map(ptShort).join(', ')}</div>`}</div>
+      ${item.status === 'flagged' && html`<div className="fields">
+        <div className="section-head" style=${{ marginBottom: 0 }}><span className="label">Resolve flag</span></div>
+        <div style=${{ display: 'flex', gap: 8 }}>
+          <input className="input" placeholder="Reassign to…" value=${reassign} onChange=${e => setReassign(e.target.value)} />
+          <button className="btn btn-primary" disabled=${!reassign.trim()} onClick=${() => { onResolve(item, reassign.trim()); onClose(); }}>Resolve</button>
+        </div></div>`}
+      <div className="fields">
+        <div className="section-head" style=${{ marginBottom: 0 }}><span className="label">Edit</span></div>
+        <input className="input" value=${room} onChange=${e => setRoom(e.target.value)} placeholder="Room" aria-label="Room" />
+        <input className="input" value=${text} onChange=${e => setText(e.target.value)} placeholder="Item" aria-label="Item" />
+        <input className="input" value=${assignee} onChange=${e => setAssignee(e.target.value)} placeholder="Assignee" aria-label="Assignee" />
+        <textarea className="input" rows=${2} value=${notes} onChange=${e => setNotes(e.target.value)} placeholder="Notes — what happened, what it's waiting on…" aria-label="Notes" style=${{ paddingTop: 10 }} />
+        ${changed && html`<button className="btn btn-primary" disabled=${!text.trim()} onClick=${() => { onSave({ ...item, room, item: text, assignee, notes }); onClose(); }}>Save changes</button>`}
+      </div>
+      <div className="btn-row">
+        ${done ? html`<button className="btn btn-secondary" onClick=${() => { onReopen(item); onClose(); }}>Reopen</button>`
+          : item.status === 'flagged' ? null
+          : html`<button className="btn btn-primary" onClick=${() => { onComplete(item); onClose(); }}><${I.check} size=${16} />Complete</button>`}
+        <button className="btn btn-secondary" onClick=${onClose}>Done</button>
+      </div>
+    </div>
+  <//>`;
+}
+
+function PtReportSheet({ job, assignee, items, onShip, onClose }) {
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const deadline = ptWorkingDaysBefore(job.closingDate, 2);
+  // Trade email convention (CLAUDE.md): subject = recipient's name, fixed opening
+  // line, "Room: Item" bullets.
+  const text = [`Good morning. Can you please have the below listed items completed at the above address${deadline ? ` prior to ${ptFmt(deadline)}` : ''}.`, '',
+    ...items.map(it => `• ${it.room}: ${it.item}`)].join('\n');
+  const allSent = items.length > 0 && items.every(it => it.status === 'sent');
+  const copy = async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1800); } catch (e) {} };
+  return html`<${Sheet} title=${assignee} onClose=${onClose}>
+    <div className="stack" style=${{ gap: 14 }}>
+      <div className="cap">${job.address}${deadline ? ` · due ${ptFmt(deadline)}` : ''}</div>
+      <pre className="panel" style=${{ whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)', fontSize: 12, margin: 0 }}>${text}</pre>
+      <div className="btn-row">
+        <button className="btn btn-secondary" onClick=${copy}><${I.copy} size=${16} />${copied ? 'Copied' : 'Copy'}</button>
+        ${allSent ? html`<button className="btn btn-secondary" disabled>Sent</button>`
+          : html`<button className="btn btn-primary" disabled=${busy} onClick=${async () => { setBusy(true); await onShip(assignee); setBusy(false); onClose(); }}>
+              ${busy && html`<${I.loader} size=${16} className="spin" />`}Mark as sent</button>`}
+      </div>
+    </div>
+  <//>`;
+}
+
+function PtDictateSheet({ dictation, setDictation, processing, error, onProcess, onClose }) {
+  return html`<${Sheet} title="Dictate walkthrough" onClose=${onClose}>
+    <div className="stack" style=${{ gap: 12, marginTop: 8 }}>
+      <textarea className="input" rows=${6} autoFocus value=${dictation} onChange=${e => setDictation(e.target.value)} style=${{ paddingTop: 10 }}
+        placeholder="Closing date first if it isn't set, then room, item and who it's for, for each thing you find…" />
+      <div className="cap" style=${{ display: 'flex', alignItems: 'center', gap: 6 }}><${I.mic} size=${14} />Tap your keyboard's mic to dictate</div>
+      ${error && html`<${Notice}>${error}<//>`}
+      <button className="btn btn-primary btn-lg" onClick=${onProcess} disabled=${processing || !dictation.trim()}>
+        ${processing && html`<${I.loader} size=${16} className="spin" />`}${processing ? 'Processing' : 'Process'}</button>
+    </div>
+  <//>`;
+}
+
+function PtReviewSheet({ items, closingDate, onUpdate, onRemove, onSave, onClose, saving, error }) {
+  return html`<${Sheet} title="Review before saving" onClose=${onClose}>
+    <div className="stack" style=${{ gap: 12, marginTop: 8 }}>
+      ${closingDate && html`<div className="cap">Detected closing date: ${ptFmt(closingDate)}</div>`}
+      ${items.map(it => html`<div key=${it.id} className="panel fields" style=${{ padding: 12, gap: 8 }}>
+        <div style=${{ display: 'flex', gap: 8 }}>
+          <input className="input" style=${{ flex: 1 }} value=${it.room} onChange=${e => onUpdate(it.id, 'room', e.target.value)} placeholder="Room" />
+          <button className="icon-btn" aria-label="Remove item" onClick=${() => onRemove(it.id)}><${I.trash} size=${17} /></button>
+        </div>
+        <input className="input" style=${{ width: '100%' }} value=${it.item} onChange=${e => onUpdate(it.id, 'item', e.target.value)} placeholder="Item" />
+        <div style=${{ display: 'flex', gap: 8 }}>
+          <input className="input" style=${{ flex: 1 }} value=${it.assignee} onChange=${e => onUpdate(it.id, 'assignee', e.target.value)} placeholder="Assignee" />
+          <select className="input" style=${{ width: 'auto' }} value=${it.status} onChange=${e => onUpdate(it.id, 'status', e.target.value)}>
+            <option value="assignable">Assignable</option><option value="flagged">Flagged</option><option value="self_assigned">Self (Chris)</option>
+          </select>
+        </div>
+      </div>`)}
+      ${error && html`<${Notice}>${error}<//>`}
+      <div className="btn-row">
+        <button className="btn btn-secondary btn-lg" onClick=${onClose}>Cancel</button>
+        <button className="btn btn-primary btn-lg" disabled=${saving || !items.length} onClick=${onSave}>${saving && html`<${I.loader} size=${16} className="spin" />`}Save items</button>
+      </div>
+    </div>
+  <//>`;
+}
+
+function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
+  const [job, setJob] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
+  const [error, setError] = useState(null);
+  const [sheet, setSheet] = useState(null); // null | 'dictate' | 'review' | {item} | {report}
+  const [dictation, setDictation] = useState('');
+  const [processing, setProcessing] = useState(false);
+  const [pending, setPending] = useState([]);
+  const [pendingClosing, setPendingClosing] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  const load = async () => {
+    setLoading(true); setLoadError(null);
+    try { setJob(await withRetry(() => punchGet({ action: 'getJob', slug }))); }
+    catch (e) { setLoadError(`Couldn't load this walkthrough (${e.message || 'backend error'}).`); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, [slug]);
+  useEffect(() => { if (job && onChange) onChange(job); }, [job]);
+
+  const patchLocal = (id, patch) => setJob(j => j && { ...j, items: j.items.map(it => it.id === id ? { ...it, ...patch } : it) });
+  // Mirror of PunchTrack's backend logVisit, so "Checked today" and the trails
+  // update the instant something counts as a visit. Queue it after the item patch.
+  const visitLocal = completedId => setJob(j => {
+    if (!j) return j;
+    const today = ptToday(), visits = (j.visits || []).slice();
+    const i = visits.findIndex(v => v.date === today);
+    const was = i >= 0 ? visits[i] : { date: today, openItemIds: [], completedItemIds: [] };
+    const doneIds = completedId && was.completedItemIds.indexOf(completedId) === -1 ? was.completedItemIds.concat(completedId) : was.completedItemIds;
+    const next = { date: today, completedItemIds: doneIds, openItemIds: j.items.filter(it => it.status !== 'completed' && doneIds.indexOf(it.id) === -1).map(it => it.id) };
+    if (i >= 0) visits[i] = next; else visits.push(next);
+    return { ...j, visits, lastVisit: today };
+  });
+
+  // Patch the screen first, then write; roll back on failure. Waiting on the
+  // round-trip before updating is what caused PunchTrack's long-press misfire.
+  const optimistic = async (id, patch, write, msg) => {
+    setError(null);
+    const before = job.items.find(it => it.id === id);
+    const rollback = {};
+    if (before) Object.keys(patch).forEach(k => { rollback[k] = before[k] === undefined ? '' : before[k]; });
+    patchLocal(id, patch);
+    try { await withRetry(write); }
+    catch (e) { if (before) patchLocal(id, rollback); setError(`${msg} (${e.message}).`); }
+  };
+  const complete = it => {
+    const patch = { status: 'completed', dateCompleted: new Date().toISOString() };
+    const w = optimistic(it.id, patch, () => punchPost('updateItem', { item: { id: it.id, ...patch } }), "Couldn't mark complete");
+    visitLocal(it.id); // completing counts as a visit — logged by the backend with the write
+    return w;
+  };
+  const reopen = it => optimistic(it.id, { status: 'assignable', dateCompleted: '' },
+    () => punchPost('updateItem', { item: { id: it.id, status: 'assignable', dateCompleted: '' } }), "Couldn't reopen");
+  const saveEdit = it => optimistic(it.id, { room: it.room, item: it.item, assignee: it.assignee, notes: it.notes },
+    () => punchPost('updateItem', { item: { id: it.id, room: it.room, item: it.item, assignee: it.assignee, notes: it.notes } }), "Couldn't save edit");
+  const resolve = (it, newAssignee) => optimistic(it.id, { assignee: newAssignee, status: 'assignable' },
+    () => punchPost('resolveFlag', { itemId: it.id, resolution: { newAssignee, newStatus: 'assignable' } }), "Couldn't resolve");
+  const checkIn = async () => {
+    setError(null); visitLocal();
+    try { await withRetry(() => punchPost('checkIn', { slug })); } catch (e) { setError(`Couldn't log the visit (${e.message}).`); }
+  };
+  const ship = async assignee => {
+    setError(null);
+    try {
+      await withRetry(() => punchPost('shipReport', { slug, assignee }));
+      const now = new Date().toISOString();
+      setJob(j => ({ ...j, items: j.items.map(it => it.assignee === assignee && it.status === 'assignable' ? { ...it, status: 'sent', dateSent: now } : it) }));
+    } catch (e) { setError(`Couldn't mark as sent (${e.message}).`); }
+  };
+  const processDictation = async () => {
+    setProcessing(true); setError(null);
+    try {
+      const r = await withRetry(() => punchPost('parseDictation', { dictation }));
+      setPending(r.items || []); setPendingClosing(r.closingDate || null); setSheet('review');
+    } catch (e) { setError(`Couldn't process dictation (${e.message}).`); }
+    finally { setProcessing(false); }
+  };
+  const saveItems = async () => {
+    setProcessing(true); setError(null);
+    try {
+      await withRetry(() => punchPost('addItems', { slug, items: pending }));
+      let closingDate = job.closingDate;
+      if (pendingClosing && !job.closingDate) {
+        await withRetry(() => punchPost('saveJob', { job: { slug, address: job.address, closingDate: pendingClosing } }));
+        closingDate = pendingClosing;
+      }
+      setJob(j => ({ ...j, closingDate, items: j.items.concat(pending) }));
+      visitLocal(); // the backend logged this walk inside addItems
+      setPending([]); setPendingClosing(null); setDictation(''); setSheet(null);
+    } catch (e) { setError(`Couldn't save items (${e.message}).`); }
+    finally { setProcessing(false); }
+  };
+
+  const header = embedded ? null : html`<${Header} left=${html`<${BackLink} label=${backLabel} onClick=${onBack} />`} />`;
+  if (!job) {
+    return html`<${React.Fragment}>${header}<div className=${embedded ? '' : 'page'}>
+      ${loading ? html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`
+        : html`<div className="stack"><${Notice}>${loadError || 'Something went wrong opening this walkthrough.'}<//>
+            <button className="btn btn-secondary" onClick=${load}>Try again</button></div>`}
+    </div><//>`;
+  }
+
+  const items = job.items || [];
+  const trail = id => ptOpenTrail(job.visits, id);
+  const vs = ptVisitStatus(job);
+  const open = items.filter(it => it.status === 'assignable' || it.status === 'sent');
+  const prieb = open.filter(it => ptIsPrieb(it.assignee));
+  const flagged = items.filter(it => it.status === 'flagged');
+  const mine = items.filter(it => it.status === 'self_assigned');
+  const completed = items.filter(it => it.status === 'completed');
+  const trades = {};
+  open.filter(it => !ptIsPrieb(it.assignee)).forEach(it => { (trades[it.assignee] = trades[it.assignee] || []).push(it); });
+  const sheetItem = sheet && sheet.item ? items.find(it => it.id === sheet.item) : null;
+  const rows = list => html`<div className="card">${list.map(it => html`<${PtItemRow} key=${it.id} it=${it} trail=${trail(it.id)} onOpen=${id => setSheet({ item: id })} onComplete=${complete} />`)}</div>`;
+  const copyPrieb = async () => {
+    try { await navigator.clipboard.writeText(ptHelperList([{ address: job.address, items: prieb }])); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+    catch (e) { setError("Couldn't copy — your browser may be blocking clipboard access."); }
+  };
+
+  return html`<${React.Fragment}>
+    ${header}
+    <div className=${'pt ' + (embedded ? 'stack' : 'page stack')}>
+      ${!embedded && html`<div><div className="cap">Punch list</div><h1 className="title-house">${job.address}</h1></div>`}
+      ${!job.archived && html`<div className=${'card' + (vs.overdue ? ' attn' : '')}><div className="row">
+        <div className="grow"><div className="row-title sm">${vs.label}</div>
+          <div className=${'row-meta' + (vs.overdue ? ' attn' : '')}>${vs.overdue ? 'Needs a visit' : job.closingDate ? `Closing ${fmtShort(ptDay(job.closingDate))}` : 'No closing date in PunchTrack'}</div></div>
+        <button className="btn btn-secondary btn-sm" disabled=${vs.last === ptToday()} onClick=${checkIn}><${I.check} size=${14} />Checked today</button>
+      </div></div>`}
+      <div className="chips">
+        <span className=${'chip' + (flagged.length ? ' attn' : '')}>${open.length + flagged.length + mine.length} open</span>
+        <span className="chip">${completed.length} done</span>
+      </div>
+      ${error && !sheet && html`<${Notice}>${error}<//>`}
+      ${items.length === 0 && html`<${Empty} text="No punch items yet. Tap Dictate to walk the house." />`}
+      ${flagged.length > 0 && html`<section><div className="section-head"><span className="label attn-text">Needs my follow-up</span><span className="hint">${flagged.length}</span></div>${rows(flagged)}</section>`}
+      ${prieb.length > 0 && html`<section><div className="section-head"><span className="label">Prieb — in-house</span>
+          <button className="btn btn-secondary btn-sm" onClick=${copyPrieb}><${I.copy} size=${14} />${copied ? 'Copied' : 'Copy for helper'}</button></div>${rows(prieb)}</section>`}
+      ${mine.length > 0 && html`<section><div className="section-head"><span className="label">Chris — internal follow-up</span><span className="hint">${mine.length}</span></div>${rows(mine)}</section>`}
+      ${Object.entries(trades).map(([who, list]) => html`<section key=${who}>
+        <div className="section-head"><span className="label">${who}</span>
+          <button className="btn btn-secondary btn-sm" onClick=${() => setSheet({ report: who })}>${list.every(it => it.status === 'sent') ? 'Sent · report' : 'Report'}</button></div>
+        ${rows(list)}</section>`)}
+      ${completed.length > 0 && html`<section><div className="section-head"><span className="label">Completed</span><span className="hint">${completed.length}</span></div>${rows(completed)}</section>`}
+    </div>
+    <div className="actionbar no-print pt"><div className="actionbar-in">
+      <button className="btn btn-secondary btn-lg" disabled=${!items.length} onClick=${() => ptDownloadMarkdown(job)}><${I.external} size=${16} />Export .md</button>
+      <button className="btn btn-primary btn-lg" onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
+    </div></div>
+    ${sheet === 'dictate' && html`<${PtDictateSheet} dictation=${dictation} setDictation=${setDictation} processing=${processing} error=${error}
+      onProcess=${processDictation} onClose=${() => setSheet(null)} />`}
+    ${sheet === 'review' && html`<${PtReviewSheet} items=${pending} closingDate=${pendingClosing} saving=${processing} error=${error}
+      onUpdate=${(id, f, v) => setPending(p => p.map(it => it.id === id ? { ...it, [f]: v } : it))}
+      onRemove=${id => setPending(p => p.filter(it => it.id !== id))}
+      onSave=${saveItems} onClose=${() => { setSheet(null); setPending([]); setPendingClosing(null); }} />`}
+    ${sheetItem && html`<${PtItemSheet} key=${sheetItem.id} item=${sheetItem} trail=${trail(sheetItem.id)} onClose=${() => setSheet(null)}
+      onSave=${saveEdit} onComplete=${complete} onReopen=${reopen} onResolve=${resolve} />`}
+    ${sheet && sheet.report && html`<${PtReportSheet} job=${job} assignee=${sheet.report} items=${trades[sheet.report] || []}
+      onShip=${ship} onClose=${() => setSheet(null)} />`}
+  <//>`;
+}
+
+// House has no walkthrough yet: offer to start one (never auto-created).
+function StartPunch({ house, loading, onStart }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (loading) return html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`;
+  const start = async () => {
+    setBusy(true); setError(null);
+    try { await onStart(); } catch (e) { setError("Couldn't start the walkthrough."); setBusy(false); }
+  };
+  return html`<div className="panel stack" style=${{ gap: 14 }}>
+    <div className="cap">No walkthrough for ${house.address} yet.</div>
+    ${error && html`<${Notice}>${error}<//>`}
+    <button className="btn btn-primary btn-lg" disabled=${busy} onClick=${start}>${busy && html`<${I.loader} size=${16} className="spin" />`}Start walkthrough</button>
+  </div>`;
+}
+
+// Prieb helper list across every active house — one call, already sorted by
+// closing. A filter and a sort, no AI, no cost. Top house pre-selected.
+function PtPriebSheet({ onClose }) {
+  const [houses, setHouses] = useState(null);
+  const [sel, setSel] = useState([]);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => { (async () => {
+    try { const r = await withRetry(() => punchGet({ action: 'listPriebItems' })); const l = Array.isArray(r) ? r : []; setHouses(l); if (l.length) setSel([l[0].slug]); }
+    catch (e) { setHouses([]); }
+  })(); }, []);
+  const chosen = (houses || []).filter(h => sel.indexOf(h.slug) !== -1);
+  const n = chosen.reduce((s, h) => s + h.items.length, 0);
+  const copy = async () => { try { await navigator.clipboard.writeText(ptHelperList(chosen)); setCopied(true); setTimeout(() => setCopied(false), 1800); } catch (e) {} };
+  return html`<${Sheet} title="Prieb — in-house" onClose=${onClose}>
+    <div className="stack pt" style=${{ gap: 12, marginTop: 8 }}>
+      <div className="cap">Open items, soonest closing first. Tap a house to include it.</div>
+      ${houses === null ? html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`
+        : houses.length === 0 ? html`<${Empty} text="Nothing open in-house right now." />`
+        : html`<div className="card">${houses.map(h => { const on = sel.indexOf(h.slug) !== -1; return html`
+          <div key=${h.slug} className="row tap" style=${{ opacity: on ? 1 : 0.55 }} onClick=${() => setSel(s => on ? s.filter(x => x !== h.slug) : s.concat(h.slug))}>
+            <span className=${'chk ' + (on ? 'done' : 'off')}>${on && html`<${I.check} size=${14} strokeWidth=${3} />`}</span>
+            <div className="grow"><div className="row-title sm">${h.address}</div>
+              <div className="row-meta">${h.closingDate ? `Closes ${fmtShort(ptDay(h.closingDate))}` : 'No closing date'} · ${h.items.length} open</div>
+              ${on && h.items.map(it => html`<div key=${it.id} className="row-meta">• ${it.room}: ${it.item}</div>`)}</div>
+          </div>`; })}</div>`}
+      ${n > 0 && html`<button className="btn btn-primary btn-lg" onClick=${copy}><${I.copy} size=${16} />${copied ? 'Copied' : `Copy ${n} item${n === 1 ? '' : 's'}`}</button>`}
+    </div>
+  <//>`;
+}
+
+// Bottom Punch tab: every active walkthrough, in PunchTrack's closing-date order.
+function PunchScreen({ jobs, loading, failed, onOpen }) {
+  const [prieb, setPrieb] = useState(false);
+  const active = jobs.filter(j => !j.archived);
+  const overdue = active.filter(j => ptVisitStatus(j).overdue).length;
+  return html`<div className="page stack">
+    <div><div className=${'cap' + (overdue ? ' attn-text' : '')}>${overdue ? `${overdue} need${overdue === 1 ? 's' : ''} a visit` : 'Walkthrough punch lists'}</div><h1 className="title">Punch</h1></div>
+    <div className="btn-row pt">
+      <button className="btn btn-secondary" onClick=${() => setPrieb(true)}>Prieb list</button>
+      <a className="btn btn-secondary" href=${PUNCHTRACK_URL} target="_blank" rel="noopener">Old PunchTrack<${I.external} size=${14} /></a>
+    </div>
+    ${failed && active.length > 0 && html`<div className="cap">Couldn't refresh — showing the saved list.</div>`}
+    ${loading ? html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`
+      : active.length === 0 ? html`<${Empty} text=${failed ? "Couldn't load walkthroughs. Check your connection." : 'No walkthroughs yet. Start one from a house’s Punch tab.'} />`
+      : html`<div className="card">${active.map(j => { const vs = ptVisitStatus(j); return html`
+        <div key=${j.slug} className="row tap" onClick=${() => onOpen(j.slug)}>
+          <div className="grow"><div className="row-title">${j.address}</div>
+            <div className=${'row-meta' + (vs.overdue ? ' attn' : '')}>${[ptHasCounts(j) ? `${j.open} open` : null, vs.label, vs.overdue && 'needs a visit'].filter(Boolean).join(' · ')}</div></div>
+          <${Ring} label="Punch" pct=${punchPct(j)} attn=${vs.overdue} />
+        </div>`; })}</div>`}
+    ${prieb && html`<${PtPriebSheet} onClose=${() => setPrieb(false)} />`}
+  </div>`;
 }
 
 // ── Add house ────────────────────────────────────────────────────
@@ -1558,7 +2083,7 @@ function useHouses() {
 // ── Shell: bottom tabs + detail routes ───────────────────────────
 // tab   = which bottom tab is showing (today | houses | scope | punch | bonuses)
 // route = a full-screen detail page opened from a tab, or null:
-//         { type: 'house', id, view: 'milestones'|'scope'|'punch' } | { type: 'job', slug }
+//         { type: 'house', id, view: 'milestones'|'scope'|'punch' } | { type: 'job', slug } | { type: 'punchjob', slug }
 // Back from a detail page always returns to the tab it was opened from.
 const TAB_LABELS = { today: 'Today', houses: 'Houses', scope: 'Scope', punch: 'Punch', bonuses: 'Bonuses' };
 
@@ -1572,6 +2097,7 @@ function Shell() {
   // Both backends load in parallel on startup (two independent effects).
   const { houses, ready, sync, loading, updatedAt, setHouses } = useHouses();
   const scope = useScopeJobs();
+  const punch = usePunchJobs();
 
   useEffect(() => { window.scrollTo(0, 0); }, [tab, route]);
 
@@ -1616,6 +2142,16 @@ function Shell() {
     scope.setJobs(js => js.filter(j => j.slug !== slug));
   };
 
+  // Starts the PunchTrack walkthrough for a house. Never automatic — only from
+  // the Start walkthrough button. Carries the house's closing date across so the
+  // trade-report deadline and the visit rule work from day one.
+  const createPunch = async (h) => {
+    const job = { slug: slugify(h.address) + '-' + newId().slice(0, 4), address: h.address, closingDate: h.milestones.closing || '',
+      createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString() };
+    await withRetry(() => punchPost('createJob', { job }));
+    punch.setJobs(js => [{ ...job, archived: '', lastVisit: '', total: 0, done: 0, open: 0 }, ...js]);
+  };
+
   const active = houses.filter(h => !h.archived);
   const openHouse = (id, view = 'milestones') => { setShowSearch(false); setRoute({ type: 'house', id, view }); };
   // A scope job opens on its house's Scope tab when a house matches by address;
@@ -1624,6 +2160,12 @@ function Shell() {
     const j = scope.jobs.find(x => x.slug === slug);
     const h = j && (active.find(x => jobForHouse(x, scope.jobs) === j) || houses.find(x => jobForHouse(x, scope.jobs) === j));
     setRoute(h ? { type: 'house', id: h.id, view: 'scope' } : { type: 'job', slug });
+  };
+  // Same for a walkthrough: its house's Punch tab when one matches, else standalone.
+  const openPunch = slug => {
+    const j = punch.jobs.find(x => x.slug === slug);
+    const h = j && (active.find(x => punchForHouse(x, punch.jobs) === j) || houses.find(x => punchForHouse(x, punch.jobs) === j));
+    setRoute(h ? { type: 'house', id: h.id, view: 'punch' } : { type: 'punchjob', slug });
   };
   const back = () => setRoute(null);
   const syncBadge = html`<${SyncBadge} sync=${sync} loading=${loading} updatedAt=${updatedAt} />`;
@@ -1638,17 +2180,27 @@ function Shell() {
     const h = houses.find(x => x.id === route.id);
     if (!h) { setTimeout(back); return null; }
     const sj = jobForHouse(h, scope.jobs);
+    const pj = punchForHouse(h, punch.jobs);
     const view = route.view || 'milestones';
     const setView = v => setRoute(r => ({ ...r, view: v }));
     const scopeEl = sj
       ? html`<${ScopeJobScreen} key=${sj.slug} slug=${sj.slug} embedded onChange=${scope.updateSummary} />`
       : html`<${StartScope} address=${h.address} loading=${scope.loading} onStart=${() => createJob(h.address)} />`;
-    return html`<div className=${'app' + (view === 'scope' && sj ? ' has-actions' : '')}>
+    const punchEl = pj
+      ? html`<${PunchJobScreen} key=${pj.slug} slug=${pj.slug} embedded onChange=${punch.updateSummary} />`
+      : html`<${StartPunch} house=${h} loading=${punch.loading} onStart=${() => createPunch(h)} />`;
+    return html`<div className=${'app' + ((view === 'scope' && sj) || (view === 'punch' && pj) ? ' has-actions' : '')}>
       <${Header} left=${html`<${BackLink} label=${TAB_LABELS[tab]} onClick=${back} />`}
         right=${html`<${SyncBadge} sync=${sync} loading=${loading} updatedAt=${updatedAt} compact /><span className="hdr-meta">${h.subdivision || ''}</span>`} />
-      <${HousePage} house=${h} sj=${sj} view=${view} setView=${setView} onUpdateHouse=${u => upH(h.id, u)} scope=${scopeEl}
+      <${HousePage} house=${h} sj=${sj} pj=${pj} punch=${punchEl} view=${view} setView=${setView} onUpdateHouse=${u => upH(h.id, u)} scope=${scopeEl}
         milestones=${html`<${HouseScreen} house=${h} onUpdate=${(k, v) => upM(h.id, k, v)} onUpdateHouse=${u => upH(h.id, u)} onToggleBonus=${k => togB(h.id, k)}
           onArchive=${() => arch(h.id)} onDelete=${() => del(h.id)} />`} />
+    </div>`;
+  }
+
+  if (route && route.type === 'punchjob') {
+    return html`<div className="app has-actions">
+      <${PunchJobScreen} key=${route.slug} slug=${route.slug} backLabel=${TAB_LABELS[tab]} onBack=${back} onChange=${punch.updateSummary} />
     </div>`;
   }
 
@@ -1660,12 +2212,12 @@ function Shell() {
 
   return html`<div className="app has-tabs">
     <${Header} left=${html`<${Logo} />`} right=${html`${syncBadge}${tab === 'today' && html`<button className="icon-btn" aria-label="Search houses" onClick=${() => setShowSearch(true)}><${I.search} size=${20} /></button>`}`} />
-    ${tab === 'today'   && html`<${TodayScreen} houses=${active} jobs=${scope.jobs} onOpen=${openHouse} />`}
+    ${tab === 'today'   && html`<${TodayScreen} houses=${active} jobs=${scope.jobs} punchJobs=${punch.jobs} onOpen=${openHouse} />`}
     ${tab === 'houses'  && html`<${HousesScreen} houses=${houses} filter=${houseFilter} setFilter=${setHouseFilter} sortBy=${sortBy} setSortBy=${setSortBy}
                               onOpen=${openHouse} onAdd=${() => setShowAdd(true)} onRestore=${id => upH(id, { archived: false })} />`}
     ${tab === 'scope'   && html`<${ScopeListScreen} jobs=${scope.jobs} loading=${scope.loading} failed=${scope.failed}
                               onOpen=${openJob} onCreate=${async a => openJob(await createJob(a))} onDelete=${deleteJob} />`}
-    ${tab === 'punch'   && html`<${PunchScreen} />`}
+    ${tab === 'punch'   && html`<${PunchScreen} jobs=${punch.jobs} loading=${punch.loading} failed=${punch.failed} onOpen=${openPunch} />`}
     ${tab === 'bonuses' && html`<${BonusesScreen} houses=${active} onOpen=${openHouse} onToggleBonus=${togB} />`}
     <${TabBar} tab=${tab} onTab=${setTab} />
     ${showAdd && html`<${AddHouseSheet} onAdd=${addHouse} onClose=${() => setShowAdd(false)} />`}

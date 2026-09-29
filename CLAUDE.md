@@ -165,6 +165,23 @@ applies to the other.**
   you want it — consider porting the `withRetry()` pattern from the Scope
   Deviation half to `sheetsSave()`/`sheetsLoad()` here too.
 
+### Punch tab — PunchTrack, embedded (2026-09-29)
+Spec: PunchTrack repo, `SPEC-Integration-and-LastChecked.md` Part 1. Only the
+**screen** moved in: punch items stay in PunchTrack's own sheet + Apps Script
+backend, and this page calls it directly (`punchGet`/`punchPost`, its own
+`PUNCH_APP_TOKEN` — never reuse BuildTrack's or Scope's token). Nothing about
+PunchTrack lives in this repo's `.gs` files.
+- Matched to houses on street address (`punchForHouse`, reusing `jobForHouse`).
+- Opt-in: every house page has a Punch tab, but until a walkthrough exists it only
+  shows **Start walkthrough** (`StartPunch`); ring and count stay em-dash until then.
+- Mirrors PunchTrack's rules — keep them in sync with that repo's CLAUDE.md:
+  Prieb lane by assignee name (`PT_PRIEB_ALIASES`), optimistic item writes,
+  flagged items resolve (never complete), visits/"last checked" overdue rule in
+  workdays (`ptVisitStatus`), trade report deadline = 2 workdays before closing.
+- The overdue badge never reorders anything; `houseFact` is unchanged.
+- PunchTrack's standalone page stays live for a trial period (both hit the same
+  sheet), then gets retired. The Punch tab links to it as "Old PunchTrack".
+
 ### Design system (2026-09 "Control Room" revamp)
 - All colors, fonts, radii and tap sizes are CSS variables in the `:root` block
   at the top of `index.html`'s `<style>`. Components use classes/variables only —
