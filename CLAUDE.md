@@ -122,7 +122,14 @@ applies to the other.**
 - Has: `APP_TOKEN` check on every request, `CacheService`-based rate limiting
   (~60/min reads, ~20/min writes, ~10/min AI, plus a per-day AI cap), a
   `withRetry()` wrapper on the frontend, `escapeHtml()` on rendered user text.
-- Comm methods for logging how a trade was reached: `email`, `text`, `coconstruct`.
+- Comm methods for logging how a trade was reached: `email`, `text`, `coconstruct`, `call`
+  (`call` added 2026-09; stored in Items columns 17-18 `callDone`/`callDate`, appended
+  after `createdAt` so no existing column moved; older rows read as not-called).
+- `listJobSummaries` (read, same token + read bucket as `listJobs`): per-job
+  notSent/sent/done/total + oldest dates, from one read of each sheet. Feeds the
+  Today rings/KPIs. Frontend falls back to `listJobs` if the backend lacks it.
+- House ↔ scope job match: `slugify(house.address) === slugify(job.address)` —
+  NOT the job slug, which ends in 4 random chars.
 - Known fixed issue (2026-08-17 commit): a data-loss bug from overlapping saves on
   Items — if you're touching save logic here, understand what that fix actually
   did before changing it.
@@ -157,6 +164,17 @@ applies to the other.**
   the other. Not addressed by this token/rate-limit change; open follow-up if
   you want it — consider porting the `withRetry()` pattern from the Scope
   Deviation half to `sheetsSave()`/`sheetsLoad()` here too.
+
+### Design system (2026-09 "Control Room" revamp)
+- All colors, fonts, radii and tap sizes are CSS variables in the `:root` block
+  at the top of `index.html`'s `<style>`. Components use classes/variables only —
+  never hex values inline. Full spec + Chris's decisions: `docs/UI-REVAMP-SPEC.md`.
+- Dark only. One accent, `--attn` (amber), means "needs attention" and nothing else.
+- No build step: React 18 + `htm` tagged templates (`html\`...\``), from jsdelivr.
+  Don't reintroduce Babel/JSX.
+- Every tap target ≥ 44px; no emoji in the UI (inline stroke SVG icons in `I`).
+- Loading is stale-while-revalidate (`useHouses`, `useScopeJobs`) — see the
+  comment on `useHouses` for the rules that keep the 2026-08-18 fix intact.
 
 ### Deprecated — do not use as reference
 `OldBuildTrack` and any "old"-prefixed Scope Deviation repo are archived pre-merge

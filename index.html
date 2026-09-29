@@ -208,6 +208,29 @@ select.input { appearance: none; -webkit-appearance: none; padding-right: 30px;
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { transform: translateY(24px); opacity: 0; } }
 
+/* ── KPI tiles ── */
+.kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kpi { border: 1px solid var(--border); border-radius: var(--radius-tile); padding: 12px; min-width: 0; }
+.kpi-label { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi-value { font-family: var(--font-mono); font-size: 24px; line-height: 1.2; margin: 4px 0 2px; }
+.kpi-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Progress rings ── */
+.rings { display: flex; gap: 6px; flex-shrink: 0; }
+.ring { display: block; }
+.ring-track { fill: none; stroke: var(--border); stroke-width: 3; }
+.ring-arc { fill: none; stroke: var(--text); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray 0.3s; }
+.ring.attn .ring-arc { stroke: var(--attn); }
+.ring.attn .ring-track { stroke: var(--attn-wash); }
+.ring-none { width: 26px; height: 26px; display: grid; place-items: center; font-family: var(--font-mono); font-size: 13px; color: var(--text-5); }
+
+/* ── Underline tabs (house page) ── */
+.utabs { display: flex; gap: 22px; border-bottom: 1px solid var(--border); }
+.utab { min-height: var(--tap); display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text-3); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.utab.on { color: var(--text); font-weight: 500; border-bottom-color: var(--text); }
+.utab .n { font-family: var(--font-mono); font-size: 11px; color: var(--text-4); font-weight: 400; }
+.utab .n.attn { color: var(--attn); }
+
 /* ── Misc ── */
 .empty { padding: 40px 16px; text-align: center; color: var(--text-3); font-size: 14px; }
 .notice { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; padding: 10px 12px; border-radius: var(--radius-tile);
@@ -445,37 +468,104 @@ function sortByClosing(list) {
     return new Date(ac) - new Date(bc);
   });
 }
-// The single most urgent fact for a house (Chris's Q3 priority order). Rules 1–2
-// only need house data; the scope rules (3–4) are added once scope summaries load.
-function houseFact(h) {
+// The single most urgent fact for a house, in Chris's Q3 priority order:
+//  1) closing ≤14d with no Final Clean date   2) closing ≤14d with no walkthrough
+//  3) a scope item not sent                   4) a scope item sent (communicated)
+//     but not marked out for ≥7 days          5) on track
+// `sj` is this house's scope-job summary (or undefined if no job / not loaded).
+const SENT_STALE_DAYS = 7;
+const daysSince = iso => iso ? -daysTo(iso) : null;
+function houseFact(h, sj) {
   const d = daysTo(h.milestones.closing);
   const closes = d === null ? null : d === 0 ? 'Closes today' : d > 0 ? `Closes in ${d}d` : `Closing was ${-d}d ago`;
   if (d !== null && d >= 0 && d <= 14) {
     if (!h.milestones.finalClean)  return { text: `${closes} · no clean scheduled`, attn: true };
     if (!h.milestones.walkthrough) return { text: `${closes} · no walkthrough set`, attn: true };
   }
+  if (hasCounts(sj) && sj.notSent > 0) return { text: `${sj.notSent} scope item${sj.notSent > 1 ? 's' : ''} not sent`, attn: true, scope: true };
+  const stale = hasCounts(sj) ? daysSince(sj.oldestSentNoReplyDate) : null;
+  if (stale !== null && stale >= SENT_STALE_DAYS) return { text: `Scope sent ${stale}d ago · not marked out`, attn: true, scope: true };
   if (d === null) return { text: `No closing date · ${doneCount(h)}/${MILESTONES.length} milestones`, attn: false };
   return { text: d >= 0 ? `${closes} · on track` : closes, attn: false };
 }
+// Does this house's scope job need attention (rules 3–4), regardless of which fact won?
+function scopeNeedsAttn(sj) {
+  if (!hasCounts(sj)) return false;
+  const stale = daysSince(sj.oldestSentNoReplyDate);
+  return sj.notSent > 0 || (stale !== null && stale >= SENT_STALE_DAYS);
+}
+function milestonesNeedAttn(h) {
+  const d = daysTo(h.milestones.closing);
+  return d !== null && d >= 0 && d <= 14 && (!h.milestones.finalClean || !h.milestones.walkthrough);
+}
+
+// ── Progress ring (em-dash when the house has no job in that tool) ─
+function Ring({ pct, attn, label }) {
+  if (pct === null || pct === undefined) return html`<span className="ring-none" aria-label=${label + ': no job'}>—</span>`;
+  const c = 2 * Math.PI * 10, p = Math.max(0, Math.min(1, pct));
+  return html`<svg className=${'ring' + (attn ? ' attn' : '')} width="26" height="26" viewBox="0 0 26 26" role="img" aria-label=${`${label} ${Math.round(p * 100)}%`}>
+    <circle className="ring-track" cx="13" cy="13" r="10" />
+    ${p > 0 && html`<circle className="ring-arc" cx="13" cy="13" r="10" strokeDasharray=${`${c * p} ${c}`} transform="rotate(-90 13 13)" />`}
+  </svg>`;
+}
+const scopePct = sj => !sj ? null : !hasCounts(sj) ? null : sj.total === 0 ? 0 : sj.done / sj.total;
+
+function KpiTile({ label, value, sub, attn }) {
+  return html`<div className="kpi"><div className="kpi-label">${label}</div><div className="kpi-value">${value}</div>
+    <div className=${'kpi-sub' + (attn ? ' attn-text' : '')}>${sub}</div></div>`;
+}
 
 // ── Today ────────────────────────────────────────────────────────
-function TodayScreen({ houses, onOpen }) {
+function TodayScreen({ houses, jobs, onOpen }) {
   const list = sortByClosing(houses);
   const date = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const sjs = list.map(h => jobForHouse(h, jobs));
+  const counted = sjs.filter(hasCounts);
+  const open = counted.reduce((s, j) => s + j.notSent + j.sent, 0);
+  const unsent = counted.reduce((s, j) => s + j.notSent, 0);
+  const closingSoon = list.filter(h => { const d = daysTo(h.milestones.closing); return d !== null && d >= 0 && d <= 14; });
+  const next = closingSoon[0];
+  const nextDay = next ? new Date(next.milestones.closing + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short' }) : null;
+  const countsKnown = jobs.some(hasCounts);
   return html`<div className="page stack">
     <div><div className="cap">${date}</div><h1 className="title">${list.length} active home${list.length === 1 ? '' : 's'}</h1></div>
+    <div className="kpis">
+      <${KpiTile} label="Scope open" value=${countsKnown ? open : '—'} sub=${!countsKnown ? 'Counts pending' : unsent > 0 ? `${unsent} unsent` : 'All sent'} attn=${unsent > 0} />
+      <${KpiTile} label="Punch open" value="—" sub="In PunchTrack" />
+      <${KpiTile} label="Closing ≤14d" value=${closingSoon.length} sub=${next ? `next ${nextDay}` : 'None soon'} />
+    </div>
     <div>
-      <div className="section-head"><span className="label">Houses</span></div>
+      <div className="section-head"><span className="label">Houses</span><span className="hint">MLS · Scope · Punch</span></div>
       ${list.length === 0 ? html`<${Empty} text="No active homes yet. Add one from the Houses tab." />` : html`
       <div className="card">
-        ${list.map(h => { const f = houseFact(h); const d = daysTo(h.milestones.closing); return html`
+        ${list.map((h, i) => { const sj = sjs[i], f = houseFact(h, sj); return html`
           <div key=${h.id} className="row tap" onClick=${() => onOpen(h.id)}>
             <div className="grow"><div className="row-title">${h.address}</div><div className=${'row-meta' + (f.attn ? ' attn' : '')}>${f.text}</div></div>
-            <div className=${'count' + (f.attn ? ' attn' : '')}>${countdown(d)}</div>
+            <div className="rings">
+              <${Ring} label="Milestones" pct=${doneCount(h) / MILESTONES.length} attn=${milestonesNeedAttn(h)} />
+              <${Ring} label="Scope" pct=${scopePct(sj)} attn=${scopeNeedsAttn(sj)} />
+              <${Ring} label="Punch" pct=${null} />
+            </div>
           </div>`; })}
       </div>`}
     </div>
   </div>`;
+}
+
+// ── Search (address only — Q9) ───────────────────────────────────
+function SearchSheet({ houses, onOpen, onClose }) {
+  const [term, setTerm] = useState('');
+  const t = term.trim().toLowerCase();
+  const hits = t ? houses.filter(h => (h.address || '').toLowerCase().includes(t)) : [];
+  return html`<${Sheet} title="Search" onClose=${onClose}>
+    <div className="stack" style=${{ gap: 12, marginTop: 8 }}>
+      <input className="input" autoFocus placeholder="Address…" value=${term} onChange=${e => setTerm(e.target.value)} aria-label="Search by address" />
+      ${t && (hits.length === 0 ? html`<div className="cap">No houses match.</div>` : html`<div className="card">
+        ${hits.map(h => html`<div key=${h.id} className="row tap" onClick=${() => onOpen(h.id)}>
+          <div className="grow"><div className="row-title">${h.address}</div><div className="row-meta">${[subLine(h), h.archived && 'Archived'].filter(Boolean).join(' · ')}</div></div>
+        </div>`)}</div>`)}
+    </div>
+  <//>`;
 }
 
 // ── Houses (Active · Closing · Archived) ─────────────────────────
@@ -547,15 +637,16 @@ function HousesScreen({ houses, filter, setFilter, sortBy, setSortBy, onOpen, on
   </div>`;
 }
 
-// ── House page ───────────────────────────────────────────────────
-function HouseScreen({ house: h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, onDelete }) {
-  const [confArch, setConfArch] = useState(false);
-  const [confDel, setConfDel] = useState(false);
-  const appl = bonusFor(h);
-  const unclaim = appl.filter(b => !h.bonuses[b.key] && eligible(h, b));
+// ── House page: title + Milestones · Scope · Punch ───────────────
+function HousePage({ house: h, sj, view, setView, onUpdateHouse, milestones, scope }) {
   const d = daysTo(h.milestones.closing);
-  const fact = houseFact(h);
-
+  const fact = houseFact(h, sj);
+  const open = hasCounts(sj) ? sj.notSent + sj.sent : null;
+  const tabs = [
+    ['milestones', 'Milestones', `${doneCount(h)}/${MILESTONES.length}`, milestonesNeedAttn(h)],
+    ['scope', 'Scope', open === null ? (sj ? '' : '—') : String(open), scopeNeedsAttn(sj)],
+    ['punch', 'Punch', '—', false],
+  ];
   return html`<div className="page stack">
     <div className="between" style=${{ alignItems: 'flex-start' }}>
       <div className="grow">
@@ -568,7 +659,23 @@ function HouseScreen({ house: h, onUpdate, onUpdateHouse, onToggleBonus, onArchi
       </div>
     </div>
     ${fact.attn && html`<${Notice}>${fact.text}<//>`}
+    <div className="utabs" role="tablist">
+      ${tabs.map(([k, l, n, attn]) => html`<button key=${k} role="tab" aria-selected=${view === k} className=${'utab' + (view === k ? ' on' : '')} onClick=${() => setView(k)}>
+        ${l}${n && html`<span className=${'n' + (attn ? ' attn' : '')}>${n}</span>`}</button>`)}
+    </div>
+    ${view === 'milestones' && milestones}
+    ${view === 'scope' && scope}
+    ${view === 'punch' && html`<${PunchPanel} />`}
+  </div>`;
+}
 
+function HouseScreen({ house: h, onUpdate, onUpdateHouse, onToggleBonus, onArchive, onDelete }) {
+  const [confArch, setConfArch] = useState(false);
+  const [confDel, setConfDel] = useState(false);
+  const appl = bonusFor(h);
+  const unclaim = appl.filter(b => !h.bonuses[b.key] && eligible(h, b));
+
+  return html`<div className="stack">
     <div className="card">
       <div className="row"><div className="fields-2 grow">
         <label><span className="field-label">Subdivision</span><input className="input" value=${h.subdivision || ''} onChange=${e => onUpdateHouse({ subdivision: e.target.value })} placeholder="Subdivision name…" /></label>
@@ -785,7 +892,41 @@ const COMM_METHODS = [
   { key: "email", label: "email" },
   { key: "text", label: "text" },
   { key: "coconstruct", label: "CoConstruct" },
+  { key: "call", label: "call" },
 ];
+
+// Items saved before "call" existed have no communicated.call — fill in any
+// missing method as not-done so every `communicated[key].done` read is safe.
+function normalizeJob(job) {
+  if (!job || !Array.isArray(job.items)) return job;
+  return { ...job, items: job.items.map((it) => ({ ...it, communicated: { ...defaultCommunicated(), ...(it.communicated || {}) } })) };
+}
+
+// "Sep 28, 2026" / ISO / Date → "2026-09-28" (local), or null.
+function toIsoDay(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const minDay = (a, b) => (!b ? a : !a || b < a ? b : a);
+
+// Client-side twin of Code.gs listJobSummaries(), used to refresh a job's
+// counts right after editing it (no extra network call).
+function summarizeJob(job) {
+  const s = { slug: job.slug, address: job.address, createdAt: job.createdAt,
+    notSent: 0, sent: 0, done: 0, total: 0, oldestUnsentDate: null, oldestSentNoReplyDate: null };
+  job.items.forEach((it) => {
+    const comms = COMM_METHODS.map(({ key }) => it.communicated[key]).filter((c) => c && c.done);
+    const st = itemStatus(it);
+    s.total++;
+    s[st === "pending" ? "notSent" : st]++;
+    if (st === "pending") s.oldestUnsentDate = minDay(s.oldestUnsentDate, toIsoDay(it.createdAt));
+    if (comms.length && !it.markedOut.done) comms.forEach((c) => { s.oldestSentNoReplyDate = minDay(s.oldestSentNoReplyDate, toIsoDay(c.date)); });
+  });
+  return s;
+}
+const hasCounts = (s) => !!s && typeof s.total === "number";
 
 function defaultCommunicated() {
   return COMM_METHODS.reduce((acc, m) => {
@@ -910,14 +1051,24 @@ function useScopeJobs() {
   useEffect(() => {
     (async () => {
       try {
-        const result = await withRetry(() => backendGet({ action: 'listJobs' }));
+        let result;
+        try {
+          result = await withRetry(() => backendGet({ action: 'listJobSummaries' }));
+        } catch (e) {
+          // Backend not redeployed yet → no counts; the plain list still works.
+          if (!/Unknown action/.test(e.message)) throw e;
+          result = await withRetry(() => backendGet({ action: 'listJobs' }));
+        }
         setJobs(() => Array.isArray(result) ? result : []);
       } catch (e) { setFailed(true); }
       finally { setLoading(false); }
     })();
   }, []);
-  return { jobs: jobs || [], loading: loading && jobs === null, failed, setJobs };
+  // Keep one job's counts current after it's edited on its page.
+  const updateSummary = useCallback(job => setJobs(js => js.map(j => j.slug === job.slug ? summarizeJob(job) : j)), []);
+  return { jobs: jobs || [], loading: loading && jobs === null, failed, setJobs, updateSummary };
 }
+const jobForHouse = (h, jobs) => jobs.find(j => slugify(j.address || '') === slugify(h.address || ''));
 
 function ScopeListScreen({ jobs, loading, failed, onOpen, onCreate, onDelete }) {
   const [addr, setAddr] = useState('');
@@ -949,7 +1100,10 @@ function ScopeListScreen({ jobs, loading, failed, onOpen, onCreate, onDelete }) 
       : html`<div className="card">
         ${jobs.map(j => html`<div key=${j.slug} className="row tap" onClick=${() => onOpen(j.slug)}>
           <div className="grow"><div className="row-title">${j.address}</div>
-            <div className="row-meta">${j.createdAt ? 'Started ' + new Date(j.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : ''}</div></div>
+            <div className=${'row-meta' + (scopeNeedsAttn(j) ? ' attn' : '')}>${!hasCounts(j)
+              ? (j.createdAt ? 'Started ' + new Date(j.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '')
+              : j.total === 0 ? 'No items' : j.notSent + j.sent === 0 ? 'All done' : `${j.notSent} not sent · ${j.sent} sent`}</div></div>
+          <${Ring} label="Scope" pct=${hasCounts(j) ? scopePct(j) : null} attn=${scopeNeedsAttn(j)} />
           <button className="icon-btn" aria-label=${'Delete ' + j.address} onClick=${e => { e.stopPropagation(); setConfirmDel(j); }}><${I.trash} size=${17} /></button>
         </div>`)}
       </div>`}
@@ -1062,7 +1216,7 @@ function AddItemSheet({ categories, onAdd, onClose }) {
 
 // One scope job's page. All data logic here is carried over unchanged from the
 // original ScopeApp (save queue, AI intake/follow-up, toggles); only the UI moved.
-function ScopeJobScreen({ slug, backLabel, onBack }) {
+function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
   const [activeJob, setActiveJob] = useState(null);
   const [jobLoading, setJobLoading] = useState(true);
   const [jobLoadError, setJobLoadError] = useState(null);
@@ -1080,7 +1234,7 @@ function ScopeJobScreen({ slug, backLabel, onBack }) {
     setJobLoadError(null);
     try {
       const result = await withRetry(() => backendGet({ action: 'getJob', slug }));
-      setActiveJob(result);
+      setActiveJob(normalizeJob(result));
     } catch (e) {
       setJobLoadError(`Couldn't load this job (${e.message || 'backend error'}).`);
     } finally {
@@ -1231,12 +1385,16 @@ function ScopeJobScreen({ slug, backLabel, onBack }) {
     }
   };
 
-  const header = html`<${Header} left=${html`<${BackLink} label=${backLabel} onClick=${onBack} />`}
-    right=${html`${copyStatus && html`<span className="sync ok"><span className="sync-dot" />${copyStatus}</span>`}
-      ${activeJob && html`<button className="icon-btn" aria-label="More actions" aria-expanded=${menuOpen} onClick=${() => setMenuOpen(o => !o)}><${I.more} size=${20} /></button>`}`} />`;
+  // Let the parent refresh this job's counts (Today rings, tab badges) after edits.
+  useEffect(() => { if (activeJob && onChange) onChange(activeJob); }, [activeJob]);
+
+  const moreBtn = html`${copyStatus && html`<span className="sync ok"><span className="sync-dot" />${copyStatus}</span>`}
+    ${activeJob && html`<button className="icon-btn" aria-label="More actions" aria-expanded=${menuOpen} onClick=${() => setMenuOpen(o => !o)}><${I.more} size=${20} /></button>`}`;
+  // Embedded = shown as the Scope tab of a house page, which supplies its own header/title.
+  const header = embedded ? null : html`<${Header} left=${html`<${BackLink} label=${backLabel} onClick=${onBack} />`} right=${moreBtn} />`;
 
   if (!activeJob) {
-    return html`<${React.Fragment}>${header}<div className="page">
+    return html`<${React.Fragment}>${header}<div className=${embedded ? '' : 'page'}>
       ${jobLoading ? html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`
         : html`<div className="stack"><${Notice}>${jobLoadError || 'Something went wrong opening this job.'}<//>
             <button className="btn btn-secondary" onClick=${loadJob}>Try again</button></div>`}
@@ -1255,17 +1413,20 @@ function ScopeJobScreen({ slug, backLabel, onBack }) {
   return html`<${React.Fragment}>
     ${header}
     ${menuOpen && html`<div className="no-print" style=${{ position: 'fixed', inset: 0, zIndex: 65 }} onClick=${() => setMenuOpen(false)} />
-      <div className="menu no-print">
+      <div className="menu no-print" style=${embedded ? { position: 'fixed', top: 'auto', bottom: 'calc(84px + var(--safe-b))' } : undefined}>
         <button onClick=${handleCopySummary}><${I.copy} size=${16} />Copy summary</button>
         <button onClick=${handleExport}><${I.printer} size=${16} />Export / print</button>
       </div>`}
-    <div className="page stack">
+    <div className=${embedded ? 'stack' : 'page stack'}>
       <div className="print-only"><div className="cap">SCOPE DEVIATION LOG</div><h1 className="title-house">${job.address}</h1><div className="cap">Printed ${todayStr()}</div></div>
-      <div className="no-print"><div className="cap">Scope deviations</div><h1 className="title-house">${job.address}</h1></div>
-      <div className="chips no-print">
-        <span className=${'chip' + (counts.pending ? ' attn' : '')}>${counts.pending} not sent</span>
-        <span className="chip">${counts.sent} sent</span>
-        <span className="chip">${counts.done} done</span>
+      ${!embedded && html`<div className="no-print"><div className="cap">Scope deviations</div><h1 className="title-house">${job.address}</h1></div>`}
+      <div className="between no-print">
+        <div className="chips">
+          <span className=${'chip' + (counts.pending ? ' attn' : '')}>${counts.pending} not sent</span>
+          <span className="chip">${counts.sent} sent</span>
+          <span className="chip">${counts.done} done</span>
+        </div>
+        ${embedded && html`<div className="hdr-right">${moreBtn}</div>`}
       </div>
       ${error && !sheet && html`<${Notice}>${error}<//>`}
       ${nonEmptyCats.length === 0 ? html`<${Empty} text="No items yet. Tap Dictate to read through the contract, or Add item." />`
@@ -1384,7 +1545,7 @@ function useHouses() {
 // ── Shell: bottom tabs + detail routes ───────────────────────────
 // tab   = which bottom tab is showing (today | houses | scope | punch | bonuses)
 // route = a full-screen detail page opened from a tab, or null:
-//         { type: 'house', id } | { type: 'job', slug }
+//         { type: 'house', id, view: 'milestones'|'scope'|'punch' } | { type: 'job', slug }
 // Back from a detail page always returns to the tab it was opened from.
 const TAB_LABELS = { today: 'Today', houses: 'Houses', scope: 'Scope', punch: 'Punch', bonuses: 'Bonuses' };
 
@@ -1394,6 +1555,7 @@ function Shell() {
   const [houseFilter, setHouseFilter] = useState('active');
   const [sortBy, setSortBy] = useState('entry');
   const [showAdd, setShowAdd] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   // Both backends load in parallel on startup (two independent effects).
   const { houses, ready, sync, loading, updatedAt, setHouses } = useHouses();
   const scope = useScopeJobs();
@@ -1410,12 +1572,13 @@ function Shell() {
   const arch = id => { setHouses(p => p.map(h => h.id === id ? { ...h, archived: true } : h)); setRoute(null); };
   const del  = id => { setHouses(p => p.filter(h => h.id !== id)); setRoute(null); };
 
+  // Creates the scope job. Never automatic — only from an explicit button (CLAUDE.md).
   const createJob = async (address) => {
     const slug = slugify(address) + '-' + newId().slice(0, 4);
     const job = { slug, address, createdAt: new Date().toISOString(), categories: [...DEFAULT_CATEGORIES], items: [] };
     await withRetry(() => backendPost('createJob', { job }));
-    scope.setJobs(js => [{ slug, address: job.address, createdAt: job.createdAt }, ...js]);
-    setRoute({ type: 'job', slug });
+    scope.setJobs(js => [summarizeJob(job), ...js]);
+    return slug;
   };
   const deleteJob = async (slug) => {
     await withRetry(() => backendPost('deleteJob', { slug }));
@@ -1423,7 +1586,14 @@ function Shell() {
   };
 
   const active = houses.filter(h => !h.archived);
-  const openHouse = id => setRoute({ type: 'house', id });
+  const openHouse = (id, view = 'milestones') => { setShowSearch(false); setRoute({ type: 'house', id, view }); };
+  // A scope job opens on its house's Scope tab when a house matches by address;
+  // otherwise as a standalone scope page.
+  const openJob = slug => {
+    const j = scope.jobs.find(x => x.slug === slug);
+    const h = j && (active.find(x => slugify(x.address) === slugify(j.address)) || houses.find(x => slugify(x.address) === slugify(j.address)));
+    setRoute(h ? { type: 'house', id: h.id, view: 'scope' } : { type: 'job', slug });
+  };
   const back = () => setRoute(null);
   const syncBadge = html`<${SyncBadge} sync=${sync} loading=${loading} updatedAt=${updatedAt} />`;
 
@@ -1436,31 +1606,55 @@ function Shell() {
   if (route && route.type === 'house') {
     const h = houses.find(x => x.id === route.id);
     if (!h) { setTimeout(back); return null; }
-    return html`<div className="app">
+    const sj = jobForHouse(h, scope.jobs);
+    const view = route.view || 'milestones';
+    const setView = v => setRoute(r => ({ ...r, view: v }));
+    const scopeEl = sj
+      ? html`<${ScopeJobScreen} key=${sj.slug} slug=${sj.slug} embedded onChange=${scope.updateSummary} />`
+      : html`<${StartScope} address=${h.address} loading=${scope.loading} onStart=${() => createJob(h.address)} />`;
+    return html`<div className=${'app' + (view === 'scope' && sj ? ' has-actions' : '')}>
       <${Header} left=${html`<${BackLink} label=${TAB_LABELS[tab]} onClick=${back} />`}
         right=${html`<${SyncBadge} sync=${sync} loading=${loading} updatedAt=${updatedAt} compact /><span className="hdr-meta">${h.subdivision || ''}</span>`} />
-      <${HouseScreen} house=${h} onUpdate=${(k, v) => upM(h.id, k, v)} onUpdateHouse=${u => upH(h.id, u)} onToggleBonus=${k => togB(h.id, k)}
-        onArchive=${() => arch(h.id)} onDelete=${() => del(h.id)} />
+      <${HousePage} house=${h} sj=${sj} view=${view} setView=${setView} onUpdateHouse=${u => upH(h.id, u)} scope=${scopeEl}
+        milestones=${html`<${HouseScreen} house=${h} onUpdate=${(k, v) => upM(h.id, k, v)} onUpdateHouse=${u => upH(h.id, u)} onToggleBonus=${k => togB(h.id, k)}
+          onArchive=${() => arch(h.id)} onDelete=${() => del(h.id)} />`} />
     </div>`;
   }
 
   if (route && route.type === 'job') {
     return html`<div className="app has-actions">
-      <${ScopeJobScreen} key=${route.slug} slug=${route.slug} backLabel=${TAB_LABELS[tab]} onBack=${back} />
+      <${ScopeJobScreen} key=${route.slug} slug=${route.slug} backLabel=${TAB_LABELS[tab]} onBack=${back} onChange=${scope.updateSummary} />
     </div>`;
   }
 
   return html`<div className="app has-tabs">
-    <${Header} left=${html`<${Logo} />`} right=${syncBadge} />
-    ${tab === 'today'   && html`<${TodayScreen} houses=${active} onOpen=${openHouse} />`}
+    <${Header} left=${html`<${Logo} />`} right=${html`${syncBadge}${tab === 'today' && html`<button className="icon-btn" aria-label="Search houses" onClick=${() => setShowSearch(true)}><${I.search} size=${20} /></button>`}`} />
+    ${tab === 'today'   && html`<${TodayScreen} houses=${active} jobs=${scope.jobs} onOpen=${openHouse} />`}
     ${tab === 'houses'  && html`<${HousesScreen} houses=${houses} filter=${houseFilter} setFilter=${setHouseFilter} sortBy=${sortBy} setSortBy=${setSortBy}
                               onOpen=${openHouse} onAdd=${() => setShowAdd(true)} onRestore=${id => upH(id, { archived: false })} />`}
     ${tab === 'scope'   && html`<${ScopeListScreen} jobs=${scope.jobs} loading=${scope.loading} failed=${scope.failed}
-                              onOpen=${slug => setRoute({ type: 'job', slug })} onCreate=${createJob} onDelete=${deleteJob} />`}
+                              onOpen=${openJob} onCreate=${async a => openJob(await createJob(a))} onDelete=${deleteJob} />`}
     ${tab === 'punch'   && html`<${PunchScreen} />`}
     ${tab === 'bonuses' && html`<${BonusesScreen} houses=${active} onOpen=${openHouse} onToggleBonus=${togB} />`}
     <${TabBar} tab=${tab} onTab=${setTab} />
     ${showAdd && html`<${AddHouseSheet} onAdd=${addHouse} onClose=${() => setShowAdd(false)} />`}
+    ${showSearch && html`<${SearchSheet} houses=${houses} onOpen=${openHouse} onClose=${() => setShowSearch(false)} />`}
+  </div>`;
+}
+
+// House has no scope job yet: offer to start one (never auto-created).
+function StartScope({ address, loading, onStart }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  if (loading) return html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`;
+  const start = async () => {
+    setBusy(true); setError(null);
+    try { await onStart(); } catch (e) { setError("Couldn't create the scope log."); setBusy(false); }
+  };
+  return html`<div className="panel stack" style=${{ gap: 14 }}>
+    <div className="cap">No scope log for ${address} yet.</div>
+    ${error && html`<${Notice}>${error}<//>`}
+    <button className="btn btn-primary btn-lg" disabled=${busy} onClick=${start}>${busy && html`<${I.loader} size=${16} className="spin" />`}Start scope log</button>
   </div>`;
 }
 
