@@ -1072,7 +1072,7 @@ function useScopeJobs() {
 // jobs are often named "19613 W. 114th St - Lot 160". Match on the street part:
 // drop anything from "lot" onward, then slugify (which also ignores "W." vs "W").
 const streetKey = a => slugify(String(a || '').replace(/[\s,\-–—#(]*\blot\b.*$/i, ''));
-const lotOf = a => { const m = String(a || '').match(/\blot\s*#?\s*(\w+)/i); return m ? m[1].toLowerCase() : null; };
+const lotOf = a => { const m = String(a || '').match(/\blot\b\s*#?\s*(\w+)/i); return m ? m[1].toLowerCase() : null; };
 function jobForHouse(h, jobs) {
   const key = streetKey(h.address);
   if (!key) return undefined;
