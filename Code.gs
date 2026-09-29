@@ -28,7 +28,7 @@ const JOBS_SHEET = 'Jobs';
 const ITEMS_SHEET = 'Items';
 const CLAUDE_MODEL = 'claude-sonnet-5'; // swap to 'claude-haiku-4-5-20251001' anytime to test cost/accuracy
 
-const COMM_METHODS = ['email', 'text', 'coconstruct'];
+const COMM_METHODS = ['email', 'text', 'coconstruct', 'call'];
 
 // ---------- Rate limiting ----------
 // CacheService buckets reset every RATE_LIMIT_WINDOW_SEC seconds. Reads are
@@ -39,7 +39,7 @@ const COMM_METHODS = ['email', 'text', 'coconstruct'];
 // running overnight can't run up a large bill.
 
 const RATE_LIMIT_WINDOW_SEC = 60;
-const RATE_LIMIT_MAX_READS = 60;   // listJobs / getJob
+const RATE_LIMIT_MAX_READS = 60;   // listJobs / listJobSummaries / getJob
 const RATE_LIMIT_MAX_WRITES = 20;  // createJob / saveJob / deleteJob
 const RATE_LIMIT_MAX_AI = 10;      // parseIntake / parseFollowup, per minute
 const AI_DAILY_CAP = 150;          // parseIntake / parseFollowup, per calendar day
@@ -73,6 +73,7 @@ function doGet(e) {
     checkRateLimit('read', RATE_LIMIT_MAX_READS);
     const action = e.parameter.action;
     if (action === 'listJobs') return respond(listJobs());
+    if (action === 'listJobSummaries') return respond(listJobSummaries());
     if (action === 'getJob') return respond(getJob(e.parameter.slug));
     return respond({ error: 'Unknown action' }, 400);
   } catch (err) {
@@ -137,6 +138,48 @@ function listJobs() {
   return sheetToObjects(sheet).map((j) => ({ slug: j.slug, address: j.address, createdAt: j.createdAt }));
 }
 
+// Per-job item counts for the dashboard, from ONE read of each sheet (calling
+// getJob once per house would be one full Items read per house). Read-only.
+// Status rules mirror the front-end's itemStatus(): communicated + marked out
+// = done; either one alone = sent; neither = not sent.
+function listJobSummaries() {
+  const byJob = {};
+  sheetToObjects(getSheet(ITEMS_SHEET)).forEach((r) => {
+    (byJob[r.jobSlug] = byJob[r.jobSlug] || []).push(rowToItem(r));
+  });
+  return sheetToObjects(getSheet(JOBS_SHEET)).map((j) => {
+    const s = { slug: j.slug, address: j.address, createdAt: j.createdAt,
+      notSent: 0, sent: 0, done: 0, total: 0, oldestUnsentDate: null, oldestSentNoReplyDate: null };
+    (byJob[j.slug] || []).forEach((it) => {
+      const comms = COMM_METHODS.map((m) => it.communicated[m]).filter((c) => c.done);
+      const marked = it.markedOut.done;
+      s.total++;
+      if (comms.length && marked) s.done++;
+      else if (comms.length || marked) s.sent++;
+      else {
+        s.notSent++;
+        s.oldestUnsentDate = minIsoDate(s.oldestUnsentDate, it.createdAt);
+      }
+      // "Sent with no reply" = told the trade but not yet marked out; dated
+      // from the earliest communication.
+      if (comms.length && !marked) {
+        comms.forEach((c) => { s.oldestSentNoReplyDate = minIsoDate(s.oldestSentNoReplyDate, c.date); });
+      }
+    });
+    return s;
+  });
+}
+
+// Returns the earlier of an ISO date (yyyy-mm-dd) and a sheet value
+// ("Sep 28, 2026", an ISO timestamp, or a Date), as yyyy-mm-dd.
+function minIsoDate(current, value) {
+  if (!value) return current;
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d.getTime())) return current;
+  const iso = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return !current || iso < current ? iso : current;
+}
+
 function createJob(job) {
   const sheet = getSheet(JOBS_SHEET);
   sheet.appendRow([job.slug, job.address, job.createdAt, job.categories.join(','), new Date().toISOString()]);
@@ -188,6 +231,7 @@ function saveJob(job) {
 
     // Replace all Items rows for this job with the current set
     const itemsSheet = getSheet(ITEMS_SHEET);
+    ensureItemHeaders(itemsSheet);
     const itemsData = itemsSheet.getDataRange().getValues();
     for (let i = itemsData.length - 1; i >= 1; i--) {
       if (itemsData[i][1] === job.slug) itemsSheet.deleteRow(i + 1);
@@ -234,7 +278,26 @@ function itemToRow(it, jobSlug) {
     it.communicated.coconstruct.done,
     it.communicated.coconstruct.date || '',
     it.createdAt,
+    // Added 2026-09 — appended AFTER createdAt so no existing column moves.
+    // ensureItemHeaders() adds the matching header cells.
+    !!(it.communicated.call && it.communicated.call.done),
+    (it.communicated.call && it.communicated.call.date) || '',
   ];
+}
+
+// Columns are read by header name (sheetToObjects), so a missing header
+// would make the call columns silently unreadable. Add them once if absent.
+// They must sit at exactly the positions itemToRow writes (columns 17-18);
+// if those cells hold something else, refuse to save rather than misalign data.
+const CALL_HEADERS = [['callDone', 17], ['callDate', 18]];
+function ensureItemHeaders(itemsSheet) {
+  CALL_HEADERS.forEach(([name, col]) => {
+    const cell = itemsSheet.getRange(1, col);
+    const current = cell.getValue();
+    if (current === name) return;
+    if (current !== '') throw new Error('Items sheet column ' + col + ' header is "' + current + '", expected "' + name + '" — fix the sheet before saving.');
+    cell.setValue(name);
+  });
 }
 
 function formatSheetDate(v) {
@@ -258,6 +321,7 @@ function rowToItem(r) {
       email: { done: !!r.emailDone, date: formatSheetDate(r.emailDate) },
       text: { done: !!r.textDone, date: formatSheetDate(r.textDate) },
       coconstruct: { done: !!r.coconstructDone, date: formatSheetDate(r.coconstructDate) },
+      call: { done: !!r.callDone, date: formatSheetDate(r.callDate) }, // blank on pre-call rows → not done
     },
     createdAt: r.createdAt,
   };
@@ -310,7 +374,7 @@ ${JSON.stringify(itemSummaries)}
 
 Today's date is ${today}.
 
-Valid communication methods: "email", "text", "coconstruct". An item can have more than one method marked at once — only include methods newly done in this narration.
+Valid communication methods: "email", "text", "coconstruct", "call" (a phone call). An item can have more than one method marked at once — only include methods newly done in this narration.
 
 Match the narration to the correct item id(s). Return ONLY a JSON object, no prose, no markdown fences:
 {"updates": [{"id": string, "markedOut": true/false or omit, "communicatedMethods": ["email","coconstruct"] or omit, "note": string or omit}], "unmatched": [string]}`;
