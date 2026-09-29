@@ -1068,7 +1068,20 @@ function useScopeJobs() {
   const updateSummary = useCallback(job => setJobs(js => js.map(j => j.slug === job.slug ? summarizeJob(job) : j)), []);
   return { jobs: jobs || [], loading: loading && jobs === null, failed, setJobs, updateSummary };
 }
-const jobForHouse = (h, jobs) => jobs.find(j => slugify(j.address || '') === slugify(h.address || ''));
+// Houses are entered as street address only (lot in its own field), but scope
+// jobs are often named "19613 W. 114th St - Lot 160". Match on the street part:
+// drop anything from "lot" onward, then slugify (which also ignores "W." vs "W").
+const streetKey = a => slugify(String(a || '').replace(/[\s,\-–—#(]*\blot\b.*$/i, ''));
+const lotOf = a => { const m = String(a || '').match(/\blot\s*#?\s*(\w+)/i); return m ? m[1].toLowerCase() : null; };
+function jobForHouse(h, jobs) {
+  const key = streetKey(h.address);
+  if (!key) return undefined;
+  const hits = jobs.filter(j => streetKey(j.address) === key);
+  if (hits.length <= 1) return hits[0];
+  // Same street address twice (rare): let the lot number break the tie.
+  const lot = String(h.lotNumber || '').toLowerCase();
+  return hits.find(j => lotOf(j.address) === lot) || hits[0];
+}
 
 function ScopeListScreen({ jobs, loading, failed, onOpen, onCreate, onDelete }) {
   const [addr, setAddr] = useState('');
@@ -1591,7 +1604,7 @@ function Shell() {
   // otherwise as a standalone scope page.
   const openJob = slug => {
     const j = scope.jobs.find(x => x.slug === slug);
-    const h = j && (active.find(x => slugify(x.address) === slugify(j.address)) || houses.find(x => slugify(x.address) === slugify(j.address)));
+    const h = j && (active.find(x => jobForHouse(x, scope.jobs) === j) || houses.find(x => jobForHouse(x, scope.jobs) === j));
     setRoute(h ? { type: 'house', id: h.id, view: 'scope' } : { type: 'job', slug });
   };
   const back = () => setRoute(null);
