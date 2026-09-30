@@ -184,6 +184,8 @@ select.input { appearance: none; -webkit-appearance: none; padding-right: 30px;
 .switch.on::after { transform: translateX(18px); background: var(--bg); }
 
 /* ── Scope item checkbox ── */
+button.chk { position: relative; }
+button.chk::before { content: ""; position: absolute; inset: -12px; } /* 44px tap area around the 20px box */
 .chk { width: 20px; height: 20px; border-radius: var(--radius-chk); flex-shrink: 0; display: grid; place-items: center; }
 .chk.pending { border: 1.5px dashed var(--attn); }
 .chk.off { border: 1.5px solid var(--border-strong); }
@@ -1754,8 +1756,18 @@ function AddItemSheet({ categories, onAdd, onClose }) {
 
 // One scope job's page. All data logic here is carried over unchanged from the
 // original ScopeApp (save queue, AI intake/follow-up, toggles); only the UI moved.
+// Each job is cached per device so it opens instantly. The cached copy is
+// VIEW-ONLY until the fresh copy arrives: saveJob replaces every Items row for
+// the job, so a save built on a stale copy could overwrite newer edits made on
+// another device. `fresh` gates every write (saveJob checks freshRef too).
+const scopeJobKey = slug => 'bt_scope_job_' + slug;
+const readCachedJob = slug => { try { const s = localStorage.getItem(scopeJobKey(slug)); return s ? normalizeJob(JSON.parse(s)) : null; } catch (e) { return null; } };
+const writeCachedJob = job => { try { localStorage.setItem(scopeJobKey(job.slug), JSON.stringify(job)); } catch (e) {} };
+
 function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
-  const [activeJob, setActiveJob] = useState(null);
+  const [activeJob, setActiveJob] = useState(() => readCachedJob(slug));
+  const [fresh, setFresh] = useState(false);
+  const freshRef = useRef(false);
   const [jobLoading, setJobLoading] = useState(true);
   const [jobLoadError, setJobLoadError] = useState(null);
   const [dictation, setDictation] = useState('');
@@ -1771,8 +1783,11 @@ function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
     setJobLoading(true);
     setJobLoadError(null);
     try {
-      const result = await withRetry(() => backendGet({ action: 'getJob', slug }));
-      setActiveJob(normalizeJob(result));
+      const result = normalizeJob(await withRetry(() => backendGet({ action: 'getJob', slug })));
+      setActiveJob(result);
+      writeCachedJob(result);
+      freshRef.current = true;
+      setFresh(true);
     } catch (e) {
       setJobLoadError(`Couldn't load this job (${e.message || 'backend error'}).`);
     } finally {
@@ -1789,9 +1804,11 @@ function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
   // The functional setActiveJob form guarantees (a); chaining onto
   // saveQueueRef guarantees (b).
   const saveJob = (updater) => {
+    if (!freshRef.current) return; // never save on top of the cached (possibly stale) copy
     setActiveJob((prev) => {
       const base = typeof updater === 'function' ? updater(prev) : updater;
       const updated = { ...base, lastUpdated: new Date().toISOString() };
+      writeCachedJob(updated);
       saveQueueRef.current = saveQueueRef.current
         .then(() => withRetry(() => backendPost('saveJob', { job: updated })))
         .catch(() => setError("Couldn't save changes."));
@@ -1966,6 +1983,9 @@ function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
         </div>
         ${embedded && html`<div className="hdr-right">${moreBtn}</div>`}
       </div>
+      ${!fresh && (jobLoading ? html`<div className="cap no-print" style=${{ display: 'flex', alignItems: 'center', gap: 6 }}><${I.loader} size=${12} className="spin" />Updating — view only for a moment</div>`
+        : html`<div className="stack no-print" style=${{ gap: 8 }}><${Notice}>${jobLoadError || "Couldn't refresh."} Showing your saved copy — view only until it refreshes.<//>
+            <button className="btn btn-secondary" onClick=${loadJob}>Try again</button></div>`)}
       ${error && !sheet && html`<${Notice}>${error}<//>`}
       ${nonEmptyCats.length === 0 ? html`<${Empty} text="No items yet. Tap Dictate to read through the contract, or Add item." />`
         : nonEmptyCats.map(cat => {
@@ -1975,7 +1995,7 @@ function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
             <div className="section-head"><span className="label">${cat}</span><span className="hint">${items.length}</span></div>
             <div className=${'card' + (anyPending ? ' attn' : '')}>
               ${items.map(it => { const st = itemStatus(it); return html`
-                <div key=${it.id} className=${'row tap' + (st === 'done' ? ' item-done' : '')} onClick=${() => setSheet({ item: it.id })}>
+                <div key=${it.id} className=${'row tap' + (st === 'done' ? ' item-done' : '')} onClick=${() => fresh && setSheet({ item: it.id })}>
                   <span className=${'chk ' + st} aria-label=${st === 'pending' ? 'not sent' : st}>${st === 'done' && html`<${I.check} size=${14} strokeWidth=${3} />`}</span>
                   <div className="grow">
                     <div className="row-title sm">${it.item}</div>
@@ -1989,8 +2009,8 @@ function ScopeJobScreen({ slug, backLabel, onBack, embedded, onChange }) {
         })}
     </div>
     <div className="actionbar no-print"><div className="actionbar-in">
-      <button className="btn btn-secondary btn-lg" onClick=${() => setSheet('add')}><${I.plus} size=${18} />Add item</button>
-      <button className="btn btn-primary btn-lg" onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
+      <button className="btn btn-secondary btn-lg" disabled=${!fresh} onClick=${() => setSheet('add')}><${I.plus} size=${18} />Add item</button>
+      <button className="btn btn-primary btn-lg" disabled=${!fresh} onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
     </div></div>
     ${sheet === 'dictate' && html`<${DictateSheet} mode=${mode} setMode=${setMode} dictation=${dictation} setDictation=${setDictation}
       processing=${processing} error=${error} onProcess=${mode === 'intake' ? processIntake : processFollowup} onClose=${() => setSheet(null)} />`}
@@ -2140,6 +2160,7 @@ function Shell() {
   const deleteJob = async (slug) => {
     await withRetry(() => backendPost('deleteJob', { slug }));
     scope.setJobs(js => js.filter(j => j.slug !== slug));
+    try { localStorage.removeItem(scopeJobKey(slug)); } catch (e) {}
   };
 
   // Starts the PunchTrack walkthrough for a house. Never automatic — only from
