@@ -442,8 +442,8 @@ const TABS = [
 ];
 function TabBar({ tab, onTab }) {
   return html`<nav className="tabbar no-print"><div className="tabbar-in">
-    ${TABS.map(([k, label, Ic]) => html`<button key=${k} className=${'tab' + (tab === k ? ' on' : '')} onClick=${() => onTab(k)} aria-current=${tab === k ? 'page' : undefined}>
-      <${Ic} size=${18} />${label}</button>`)}
+    ${TABS.map(([k, label, Ic]) => html`<button key=${k} className=${'tab' + (tab === k ? ' on' : '')} onClick=${() => onTab(k)} aria-current=${tab === k ? 'page' : undefined} aria-label=${label}>
+      <${Ic} size=${20} />${tab === k && label}</button>`)}
   </div></nav>`;
 }
 function Sheet({ title, onClose, children }) {
@@ -1087,8 +1087,17 @@ function PtReviewSheet({ items, closingDate, onUpdate, onRemove, onSave, onClose
   <//>`;
 }
 
+// Walkthroughs are cached per device so they open instantly. Like scope jobs,
+// the cached copy is VIEW-ONLY until the fresh copy arrives — acting on a stale
+// copy could re-complete an item already changed on another device or log a
+// visit against old data. Every write below checks freshRef first.
+const punchJobKey = slug => 'bt_punch_job_' + slug;
+const readCachedPunch = slug => { try { const s = localStorage.getItem(punchJobKey(slug)); return s ? JSON.parse(s) : null; } catch (e) { return null; } };
+
 function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
-  const [job, setJob] = useState(null);
+  const [job, setJob] = useState(() => readCachedPunch(slug));
+  const [fresh, setFresh] = useState(false);
+  const freshRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [error, setError] = useState(null);
@@ -1101,12 +1110,14 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
 
   const load = async () => {
     setLoading(true); setLoadError(null);
-    try { setJob(await withRetry(() => punchGet({ action: 'getJob', slug }))); }
+    try { setJob(await withRetry(() => punchGet({ action: 'getJob', slug }))); freshRef.current = true; setFresh(true); }
     catch (e) { setLoadError(`Couldn't load this walkthrough (${e.message || 'backend error'}).`); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [slug]);
-  useEffect(() => { if (job && onChange) onChange(job); }, [job]);
+  useEffect(() => { if (job && fresh && onChange) onChange(job); }, [job, fresh]);
+  // Only a fresh (or freshly edited) copy is written back to the cache.
+  useEffect(() => { if (job && fresh) { try { localStorage.setItem(punchJobKey(slug), JSON.stringify(job)); } catch (e) {} } }, [job, fresh]);
 
   const patchLocal = (id, patch) => setJob(j => j && { ...j, items: j.items.map(it => it.id === id ? { ...it, ...patch } : it) });
   // Mirror of PunchTrack's backend logVisit, so "Checked today" and the trails
@@ -1125,6 +1136,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   // Patch the screen first, then write; roll back on failure. Waiting on the
   // round-trip before updating is what caused PunchTrack's long-press misfire.
   const optimistic = async (id, patch, write, msg) => {
+    if (!freshRef.current) return;
     setError(null);
     const before = job.items.find(it => it.id === id);
     const rollback = {};
@@ -1134,6 +1146,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
     catch (e) { if (before) patchLocal(id, rollback); setError(`${msg} (${e.message}).`); }
   };
   const complete = it => {
+    if (!freshRef.current) return;
     const patch = { status: 'completed', dateCompleted: new Date().toISOString() };
     const w = optimistic(it.id, patch, () => punchPost('updateItem', { item: { id: it.id, ...patch } }), "Couldn't mark complete");
     visitLocal(it.id); // completing counts as a visit — logged by the backend with the write
@@ -1146,10 +1159,12 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   const resolve = (it, newAssignee) => optimistic(it.id, { assignee: newAssignee, status: 'assignable' },
     () => punchPost('resolveFlag', { itemId: it.id, resolution: { newAssignee, newStatus: 'assignable' } }), "Couldn't resolve");
   const checkIn = async () => {
+    if (!freshRef.current) return;
     setError(null); visitLocal();
     try { await withRetry(() => punchPost('checkIn', { slug })); } catch (e) { setError(`Couldn't log the visit (${e.message}).`); }
   };
   const ship = async assignee => {
+    if (!freshRef.current) return;
     setError(null);
     try {
       await withRetry(() => punchPost('shipReport', { slug, assignee }));
@@ -1158,6 +1173,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
     } catch (e) { setError(`Couldn't mark as sent (${e.message}).`); }
   };
   const processDictation = async () => {
+    if (!freshRef.current) return;
     setProcessing(true); setError(null);
     try {
       const r = await withRetry(() => punchPost('parseDictation', { dictation }));
@@ -1166,6 +1182,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
     finally { setProcessing(false); }
   };
   const saveItems = async () => {
+    if (!freshRef.current) return;
     setProcessing(true); setError(null);
     try {
       await withRetry(() => punchPost('addItems', { slug, items: pending }));
@@ -1201,7 +1218,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   const trades = {};
   open.filter(it => !ptIsPrieb(it.assignee)).forEach(it => { (trades[it.assignee] = trades[it.assignee] || []).push(it); });
   const sheetItem = sheet && sheet.item ? items.find(it => it.id === sheet.item) : null;
-  const rows = list => html`<div className="card">${list.map(it => html`<${PtItemRow} key=${it.id} it=${it} trail=${trail(it.id)} onOpen=${id => setSheet({ item: id })} onComplete=${complete} />`)}</div>`;
+  const rows = list => html`<div className="card">${list.map(it => html`<${PtItemRow} key=${it.id} it=${it} trail=${trail(it.id)} onOpen=${id => fresh && setSheet({ item: id })} onComplete=${complete} />`)}</div>`;
   const copyPrieb = async () => {
     try { await navigator.clipboard.writeText(ptHelperList([{ address: job.address, items: prieb }])); setCopied(true); setTimeout(() => setCopied(false), 1800); }
     catch (e) { setError("Couldn't copy — your browser may be blocking clipboard access."); }
@@ -1214,12 +1231,15 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       ${!job.archived && html`<div className=${'card' + (vs.overdue ? ' attn' : '')}><div className="row">
         <div className="grow"><div className="row-title sm">${vs.label}</div>
           <div className=${'row-meta' + (vs.overdue ? ' attn' : '')}>${vs.overdue ? 'Needs a visit' : job.closingDate ? `Closing ${fmtShort(ptDay(job.closingDate))}` : 'No closing date in PunchTrack'}</div></div>
-        <button className="btn btn-secondary btn-sm" disabled=${vs.last === ptToday()} onClick=${checkIn}><${I.check} size=${14} />Checked today</button>
+        <button className="btn btn-secondary btn-sm" disabled=${!fresh || vs.last === ptToday()} onClick=${checkIn}><${I.check} size=${14} />Checked today</button>
       </div></div>`}
       <div className="chips">
         <span className=${'chip' + (flagged.length ? ' attn' : '')}>${open.length + flagged.length + mine.length} open</span>
         <span className="chip">${completed.length} done</span>
       </div>
+      ${!fresh && (loading ? html`<div className="cap no-print" style=${{ display: 'flex', alignItems: 'center', gap: 6 }}><${I.loader} size=${12} className="spin" />Updating — view only for a moment</div>`
+        : html`<div className="stack no-print" style=${{ gap: 8 }}><${Notice}>${loadError || "Couldn't refresh."} Showing your saved copy — view only until it refreshes.<//>
+            <button className="btn btn-secondary" onClick=${load}>Try again</button></div>`)}
       ${error && !sheet && html`<${Notice}>${error}<//>`}
       ${items.length === 0 && html`<${Empty} text="No punch items yet. Tap Dictate to walk the house." />`}
       ${flagged.length > 0 && html`<section><div className="section-head"><span className="label attn-text">Needs my follow-up</span><span className="hint">${flagged.length}</span></div>${rows(flagged)}</section>`}
@@ -1228,13 +1248,13 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       ${mine.length > 0 && html`<section><div className="section-head"><span className="label">Chris — internal follow-up</span><span className="hint">${mine.length}</span></div>${rows(mine)}</section>`}
       ${Object.entries(trades).map(([who, list]) => html`<section key=${who}>
         <div className="section-head"><span className="label">${who}</span>
-          <button className="btn btn-secondary btn-sm" onClick=${() => setSheet({ report: who })}>${list.every(it => it.status === 'sent') ? 'Sent · report' : 'Report'}</button></div>
+          <button className="btn btn-secondary btn-sm" disabled=${!fresh} onClick=${() => setSheet({ report: who })}>${list.every(it => it.status === 'sent') ? 'Sent · report' : 'Report'}</button></div>
         ${rows(list)}</section>`)}
       ${completed.length > 0 && html`<section><div className="section-head"><span className="label">Completed</span><span className="hint">${completed.length}</span></div>${rows(completed)}</section>`}
     </div>
     <div className="actionbar no-print pt"><div className="actionbar-in">
       <button className="btn btn-secondary btn-lg" disabled=${!items.length} onClick=${() => ptDownloadMarkdown(job)}><${I.external} size=${16} />Export .md</button>
-      <button className="btn btn-primary btn-lg" onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
+      <button className="btn btn-primary btn-lg" disabled=${!fresh} onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
     </div></div>
     ${sheet === 'dictate' && html`<${PtDictateSheet} dictation=${dictation} setDictation=${setDictation} processing=${processing} error=${error}
       onProcess=${processDictation} onClose=${() => setSheet(null)} />`}
