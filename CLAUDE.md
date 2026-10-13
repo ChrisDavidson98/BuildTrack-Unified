@@ -183,6 +183,27 @@ PunchTrack lives in this repo's `.gs` files.
   `archiveJob`, 2026-10-13). Deliberately **separate** from archiving the house:
   archiving a house in BuildTrack never touches its punch list, and vice versa
   (Chris's call — linking them is a "maybe later").
+- **Pre-walk phase** (2026-10-13, spec: PunchTrack repo `SPEC-PreWalk.md` Part B).
+  The UI lives here only; the standalone page gets none.
+  - Blank `phase` = walkthrough, on jobs and items alike (`ptPhase`). The backend
+    owns `phase` and `rollover` — this page only reads them, never writes them
+    through `updateItem`/`saveJob`.
+  - `StartPunch` offers **Start pre-walk** / **Start walkthrough** (`createPunch(h, phase)`).
+    Still opt-in, never auto-created.
+  - **Begin walkthrough** (`PtRolloverSheet` → `beginWalkthrough`): every open
+    pre-walk item needs Fixed · Carry · Drop, nothing pre-selected, sheet order.
+    Not optimistic — the job is re-read from the backend afterwards.
+  - **Never match a walkthrough item to a pre-walk item.** Carry is how Chris says
+    "same item". Carried items are unmarked on the list and in trade emails.
+  - Pre-walk report has no due date (`PtReportSheet`).
+  - **Counts only** (`ptPhaseCounts`/`ptCountsLine`, same derivation as PunchTrack's
+    `listJobs`), hidden when a house never had a pre-walk. No catch rate, fix rate,
+    "missed" stat, categories or ask bar — Chris cut these on purpose.
+  - `.md` export splits into Pre-walk / Walkthrough sections only when the house
+    has pre-walk items; otherwise the original format is unchanged.
+  - Not built: amber "walkthrough soon, pre-walk still open" flag (Chris: out for
+    now; `houseFact` untouched), and a way back to pre-walk after Begin walkthrough
+    (Chris wants one — needs a new PunchTrack backend action first).
 - PunchTrack's standalone page stays live for a trial period (both hit the same
   sheet), then gets retired. The Punch tab links to it as "Old PunchTrack".
 

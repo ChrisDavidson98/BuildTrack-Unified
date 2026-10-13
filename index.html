@@ -872,10 +872,40 @@ function ptVisitStatus(pj, closing) {
 const ptOpenTrail = (visits, id) => (visits || []).filter(v => (v.openItemIds || []).indexOf(id) !== -1).map(v => v.date);
 const ptHasCounts = pj => !!pj && typeof pj.total === 'number';
 const punchPct = pj => !ptHasCounts(pj) ? null : pj.total === 0 ? 0 : pj.done / pj.total;
+// Pre-walk phase (PunchTrack SPEC-PreWalk.md). Blank phase = walkthrough, on jobs
+// and items alike — that's every row from before pre-walk existed. The backend
+// owns phase and rollover; this page only ever reads them.
+const ptPhase = x => x && x.phase === 'prewalk' ? 'prewalk' : 'walkthrough';
+const PT_ROLLOVER = [['fixed', 'Fixed'], ['carried', 'Carry'], ['dropped', 'Drop']];
+// Same derivation as PunchTrack's listJobs counts: each pre-walk item lands in
+// exactly one of open / fixed / carried / dropped. Counts only — no rates.
+function ptPhaseCounts(items) {
+  const c = { prewalkTotal: 0, prewalkOpen: 0, prewalkFixed: 0, prewalkCarried: 0, prewalkDropped: 0, walkthroughTotal: 0 };
+  (items || []).forEach(it => {
+    if (ptPhase(it) !== 'prewalk') { c.walkthroughTotal++; return; }
+    c.prewalkTotal++;
+    if (it.rollover === 'carried') c.prewalkCarried++;
+    else if (it.rollover === 'dropped') c.prewalkDropped++;
+    else if (it.status === 'completed') c.prewalkFixed++;
+    else c.prewalkOpen++;
+  });
+  return c;
+}
+function ptCountsLine(c) {
+  if (!c.prewalkTotal) return '';
+  const parts = [`Pre-walk: ${c.prewalkTotal}`];
+  if (c.prewalkOpen) parts.push(`${c.prewalkOpen} open`);
+  if (c.prewalkFixed) parts.push(`${c.prewalkFixed} fixed`);
+  if (c.prewalkCarried) parts.push(`${c.prewalkCarried} carried`);
+  if (c.prewalkDropped) parts.push(`${c.prewalkDropped} dropped`);
+  parts.push(`Walkthrough: ${c.walkthroughTotal}`);
+  return parts.join(' · ');
+}
 function ptSummarize(job) {
   const total = job.items.length, done = job.items.filter(it => it.status === 'completed').length;
   const visits = job.visits || [];
   return { slug: job.slug, address: job.address, closingDate: job.closingDate, createdAt: job.createdAt, archived: job.archived,
+    phase: job.phase || '', ...ptPhaseCounts(job.items),
     lastVisit: job.lastVisit || (visits.length ? visits[visits.length - 1].date : ''), total, done, open: total - done };
 }
 // A house's walkthrough, matched on street address like its scope job.
@@ -887,12 +917,14 @@ const ptHelperList = houses => houses.map(h => [h.address, ...h.items.map(it => 
 
 // ── .md house archive (same format as PunchTrack's EXPORT) ─────────
 const PT_STATUS_LABEL = { assignable: 'open, not yet sent', sent: 'sent to trade, not confirmed done', self_assigned: 'open — Chris', flagged: 'flagged, needs a decision', completed: 'done' };
+const PT_ROLLOVER_LABEL = { fixed: 'pre-walk: marked fixed when the walkthrough began', carried: 'pre-walk: carried into the walkthrough', dropped: 'pre-walk: dropped when the walkthrough began' };
 function ptArchiveMarkdown(job, now = new Date()) {
   const items = job.items || [], visits = job.visits || [];
   const order = [], by = {};
   items.forEach(it => { const w = it.assignee || 'Unassigned'; if (!by[w]) { by[w] = []; order.push(w); } by[w].push(it); });
   const done = items.filter(it => it.status === 'completed').length;
   const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const counts = ptPhaseCounts(items);
   const lines = [
     `# ${job.address}`,
     `Walkthrough Items — generated ${ptFmt(today)}`,
@@ -900,19 +932,31 @@ function ptArchiveMarkdown(job, now = new Date()) {
     `${items.length} items logged — ${done} done, ${items.length - done} still open`,
     visits.length ? `${visits.length} visit${visits.length === 1 ? '' : 's'} logged — ${visits.map(v => ptFmt(v.date)).join(', ')}` : 'No visits logged',
   ];
-  order.forEach(w => {
-    lines.push('', `## ${w}`);
-    by[w].forEach(it => {
-      const dates = [];
-      if (it.dateLogged) dates.push(`logged ${ptFmt(it.dateLogged)}`);
-      if (it.dateSent) dates.push(`sent ${ptFmt(it.dateSent)}`);
-      if (it.dateCompleted) dates.push(`completed ${ptFmt(it.dateCompleted)}`);
-      lines.push(`- ${it.room}: ${it.item} [${PT_STATUS_LABEL[it.status] || it.status || 'open'}]${dates.length ? ' — ' + dates.join(', ') : ''}`);
-      if (it.notes) lines.push(`  - ${it.notes}`);
-      const trail = ptOpenTrail(visits, it.id);
-      if (trail.length) lines.push(`  - still open on: ${trail.map(ptFmt).join(', ')}`);
+  const itemLines = it => {
+    const dates = [];
+    if (it.dateLogged) dates.push(`logged ${ptFmt(it.dateLogged)}`);
+    if (it.dateSent) dates.push(`sent ${ptFmt(it.dateSent)}`);
+    if (it.dateCompleted) dates.push(`completed ${ptFmt(it.dateCompleted)}`);
+    const roll = ptPhase(it) === 'prewalk' && PT_ROLLOVER_LABEL[it.rollover];
+    lines.push(`- ${it.room}: ${it.item} [${PT_STATUS_LABEL[it.status] || it.status || 'open'}]${roll ? ` (${roll})` : ''}${dates.length ? ' — ' + dates.join(', ') : ''}`);
+    if (it.notes) lines.push(`  - ${it.notes}`);
+    const trail = ptOpenTrail(visits, it.id);
+    if (trail.length) lines.push(`  - still open on: ${trail.map(ptFmt).join(', ')}`);
+  };
+  // A house that never had a pre-walk keeps the original format exactly.
+  if (!counts.prewalkTotal) {
+    order.forEach(w => { lines.push('', `## ${w}`); by[w].forEach(itemLines); });
+  } else {
+    lines.push(ptCountsLine(counts));
+    if (ptPhase(job) === 'prewalk') lines.push('Still in pre-walk — walkthrough not started');
+    else if (job.walkthroughStartedAt) lines.push(`Walkthrough started ${ptFmt(job.walkthroughStartedAt)}`);
+    [['prewalk', 'Pre-walk'], ['walkthrough', 'Walkthrough']].forEach(([phase, title]) => {
+      const mine = order.map(w => [w, by[w].filter(it => ptPhase(it) === phase)]).filter(([, l]) => l.length);
+      if (!mine.length) return;
+      lines.push('', `## ${title}`);
+      mine.forEach(([w, l]) => { lines.push('', `### ${w}`); l.forEach(itemLines); });
     });
-  });
+  }
   return lines.join('\n') + '\n';
 }
 function ptDownloadMarkdown(job) {
@@ -1027,7 +1071,8 @@ function PtItemSheet({ item, trail, onClose, onSave, onComplete, onReopen, onRes
 function PtReportSheet({ job, assignee, items, onShip, onClose }) {
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
-  const deadline = ptWorkingDaysBefore(job.closingDate, 2);
+  // A pre-walk report carries no due date (SPEC-PreWalk decision 4).
+  const deadline = ptPhase(job) === 'prewalk' ? null : ptWorkingDaysBefore(job.closingDate, 2);
   // Trade email convention (CLAUDE.md): subject = recipient's name, fixed opening
   // line, "Room: Item" bullets.
   const text = [`Good morning. Can you please have the below listed items completed at the above address${deadline ? ` prior to ${ptFmt(deadline)}` : ''}.`, '',
@@ -1048,8 +1093,38 @@ function PtReportSheet({ job, assignee, items, onShip, onClose }) {
   <//>`;
 }
 
-function PtDictateSheet({ dictation, setDictation, processing, error, onProcess, onClose }) {
-  return html`<${Sheet} title="Dictate walkthrough" onClose=${onClose}>
+// Rollover: every open pre-walk item needs a choice before the walkthrough can
+// begin — nothing pre-selected, and the backend enforces it too. Rows stay in
+// sheet order (walk order). The code never matches items; Carry is how Chris
+// says "same item".
+function PtRolloverSheet({ job, items, busy, error, onConfirm, onClose }) {
+  const [choice, setChoice] = useState({});
+  const ready = items.every(it => choice[it.id]);
+  return html`<${Sheet} title="Begin walkthrough" onClose=${onClose}>
+    <div className="stack" style=${{ gap: 12, marginTop: 8 }}>
+      <div className="cap">${job.address}</div>
+      <div className="cap">${items.length === 0 ? 'No open pre-walk items. Everything dictated from here on is logged as a walkthrough item.'
+        : `Choose for each of the ${items.length} open pre-walk item${items.length === 1 ? '' : 's'}. Fixed and Drop close the item; Carry keeps it open on the walkthrough list.`}</div>
+      ${items.map(it => html`<div key=${it.id} className="panel fields" style=${{ padding: 12, gap: 8 }}>
+        <div><div className="row-title sm">${it.room}: ${it.item}</div><div className="row-meta">${it.assignee}</div></div>
+        <div className="seg" style=${{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+          ${PT_ROLLOVER.map(([v, label]) => html`<button key=${v} className=${choice[it.id] === v ? 'on' : ''} disabled=${busy}
+            onClick=${() => setChoice(c => ({ ...c, [it.id]: v }))}>${label}</button>`)}
+        </div>
+      </div>`)}
+      <div className="cap">There is no way back to pre-walk from the app yet.</div>
+      ${error && html`<${Notice}>${error}<//>`}
+      <div className="btn-row">
+        <button className="btn btn-secondary btn-lg" disabled=${busy} onClick=${onClose}>Cancel</button>
+        <button className="btn btn-primary btn-lg" disabled=${busy || !ready}
+          onClick=${() => onConfirm(items.map(it => ({ id: it.id, rollover: choice[it.id] })))}>${busy && html`<${I.loader} size=${16} className="spin" />`}Begin walkthrough</button>
+      </div>
+    </div>
+  <//>`;
+}
+
+function PtDictateSheet({ prewalk, dictation, setDictation, processing, error, onProcess, onClose }) {
+  return html`<${Sheet} title=${prewalk ? 'Dictate pre-walk' : 'Dictate walkthrough'} onClose=${onClose}>
     <div className="stack" style=${{ gap: 12, marginTop: 8 }}>
       <textarea className="input" rows=${6} autoFocus value=${dictation} onChange=${e => setDictation(e.target.value)} style=${{ paddingTop: 10 }}
         placeholder="Closing date first if it isn't set, then room, item and who it's for, for each thing you find…" />
@@ -1101,8 +1176,9 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [error, setError] = useState(null);
-  const [sheet, setSheet] = useState(null); // null | 'dictate' | 'review' | 'archive' | {item} | {report}
+  const [sheet, setSheet] = useState(null); // null | 'dictate' | 'review' | 'archive' | 'rollover' | {item} | {report}
   const [archiving, setArchiving] = useState(false);
+  const [rolling, setRolling] = useState(false);
   const [dictation, setDictation] = useState('');
   const [processing, setProcessing] = useState(false);
   const [pending, setPending] = useState([]);
@@ -1177,6 +1253,22 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
     } catch (e) { setError(`Couldn't ${archived ? 'archive' : 'restore'} this walkthrough (${e.message}).`); }
     finally { setArchiving(false); }
   };
+  // Pre-walk → walkthrough. One locked action on the backend, which writes the
+  // items first and flips the phase last, so re-sending after a failure is safe.
+  // Not optimistic: the result is re-read from the backend rather than guessed,
+  // and if it says items still need a choice the reloaded list shows them.
+  const beginWalkthrough = async decisions => {
+    if (!freshRef.current) return;
+    setError(null); setRolling(true);
+    try {
+      await withRetry(() => punchPost('beginWalkthrough', { slug, decisions }));
+      await load();
+      setSheet(null);
+    } catch (e) {
+      await load();
+      setError(`Couldn't begin the walkthrough (${e.message}).`);
+    } finally { setRolling(false); }
+  };
   const ship = async assignee => {
     if (!freshRef.current) return;
     setError(null);
@@ -1205,7 +1297,8 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
         await withRetry(() => punchPost('saveJob', { job: { slug, address: job.address, closingDate: pendingClosing } }));
         closingDate = pendingClosing;
       }
-      setJob(j => ({ ...j, closingDate, items: j.items.concat(pending) }));
+      // The backend stamps each new item with the job's phase; mirror that locally.
+      setJob(j => ({ ...j, closingDate, items: j.items.concat(pending.map(it => ({ ...it, phase: ptPhase(j) === 'prewalk' ? 'prewalk' : '', rollover: '' }))) }));
       visitLocal(); // the backend logged this walk inside addItems
       setPending([]); setPendingClosing(null); setDictation(''); setSheet(null);
     } catch (e) { setError(`Couldn't save items (${e.message}).`); }
@@ -1231,6 +1324,9 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   const completed = items.filter(it => it.status === 'completed');
   const trades = {};
   open.filter(it => !ptIsPrieb(it.assignee)).forEach(it => { (trades[it.assignee] = trades[it.assignee] || []).push(it); });
+  const prewalk = ptPhase(job) === 'prewalk';
+  const countsLine = ptCountsLine(ptPhaseCounts(items));
+  const rolloverItems = items.filter(it => ptPhase(it) === 'prewalk' && it.status !== 'completed');
   const sheetItem = sheet && sheet.item ? items.find(it => it.id === sheet.item) : null;
   const rows = list => html`<div className="card">${list.map(it => html`<${PtItemRow} key=${it.id} it=${it} trail=${trail(it.id)} onOpen=${id => fresh && setSheet({ item: id })} onComplete=${complete} />`)}</div>`;
   const copyPrieb = async () => {
@@ -1253,9 +1349,16 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
         <button className="btn btn-secondary btn-sm" disabled=${!fresh || archiving} onClick=${() => setArchived(false)}>${archiving && html`<${I.loader} size=${14} className="spin" />`}Restore</button>
       </div></div>`}
       <div className="chips">
+        <span className="chip">${prewalk ? 'PRE-WALK' : 'WALKTHROUGH'}</span>
         <span className=${'chip' + (flagged.length ? ' attn' : '')}>${open.length + flagged.length + mine.length} open</span>
         <span className="chip">${completed.length} done</span>
       </div>
+      ${countsLine && html`<div className="cap">${countsLine}</div>`}
+      ${prewalk && !job.archived && html`<div className="card no-print"><div className="row">
+        <div className="grow"><div className="row-title sm">Pre-walk</div>
+          <div className="row-meta">${rolloverItems.length ? `${rolloverItems.length} open — each needs Fixed, Carry or Drop` : 'Nothing open'}</div></div>
+        <button className="btn btn-secondary btn-sm" disabled=${!fresh} onClick=${() => { setError(null); setSheet('rollover'); }}>Begin walkthrough</button>
+      </div></div>`}
       ${!fresh && (loading ? html`<div className="cap no-print" style=${{ display: 'flex', alignItems: 'center', gap: 6 }}><${I.loader} size=${12} className="spin" />Updating — view only for a moment</div>`
         : html`<div className="stack no-print" style=${{ gap: 8 }}><${Notice}>${loadError || "Couldn't refresh."} Showing your saved copy — view only until it refreshes.<//>
             <button className="btn btn-secondary" onClick=${load}>Try again</button></div>`)}
@@ -1277,7 +1380,9 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       <button className="btn btn-secondary btn-lg" disabled=${!items.length} onClick=${() => ptDownloadMarkdown(job)}><${I.external} size=${16} />Export .md</button>
       <button className="btn btn-primary btn-lg" disabled=${!fresh} onClick=${() => { setError(null); setSheet('dictate'); }}><${I.mic} size=${18} />Dictate</button>
     </div></div>
-    ${sheet === 'dictate' && html`<${PtDictateSheet} dictation=${dictation} setDictation=${setDictation} processing=${processing} error=${error}
+    ${sheet === 'rollover' && html`<${PtRolloverSheet} job=${job} items=${rolloverItems} busy=${rolling} error=${error}
+      onConfirm=${beginWalkthrough} onClose=${() => setSheet(null)} />`}
+    ${sheet === 'dictate' && html`<${PtDictateSheet} prewalk=${prewalk} dictation=${dictation} setDictation=${setDictation} processing=${processing} error=${error}
       onProcess=${processDictation} onClose=${() => setSheet(null)} />`}
     ${sheet === 'review' && html`<${PtReviewSheet} items=${pending} closingDate=${pendingClosing} saving=${processing} error=${error}
       onUpdate=${(id, f, v) => setPending(p => p.map(it => it.id === id ? { ...it, [f]: v } : it))}
@@ -1305,14 +1410,16 @@ function StartPunch({ house, loading, onStart }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   if (loading) return html`<div className="empty"><${I.loader} size=${20} className="spin" /></div>`;
-  const start = async () => {
-    setBusy(true); setError(null);
-    try { await onStart(); } catch (e) { setError("Couldn't start the walkthrough."); setBusy(false); }
+  // Two ways in: pre-walk (Chris ahead of the buyer) or straight to the walkthrough.
+  const start = async phase => {
+    setBusy(phase); setError(null);
+    try { await onStart(phase); } catch (e) { setError(`Couldn't start the ${phase === 'prewalk' ? 'pre-walk' : 'walkthrough'}.`); setBusy(false); }
   };
   return html`<div className="panel stack" style=${{ gap: 14 }}>
-    <div className="cap">No walkthrough for ${house.address} yet.</div>
+    <div className="cap">No punch list for ${house.address} yet. Start a pre-walk if you're walking it ahead of the buyer.</div>
     ${error && html`<${Notice}>${error}<//>`}
-    <button className="btn btn-primary btn-lg" disabled=${busy} onClick=${start}>${busy && html`<${I.loader} size=${16} className="spin" />`}Start walkthrough</button>
+    <button className="btn btn-primary btn-lg" disabled=${!!busy} onClick=${() => start('prewalk')}>${busy === 'prewalk' && html`<${I.loader} size=${16} className="spin" />`}Start pre-walk</button>
+    <button className="btn btn-secondary btn-lg" disabled=${!!busy} onClick=${() => start('walkthrough')}>${busy === 'walkthrough' && html`<${I.loader} size=${16} className="spin" />`}Start walkthrough</button>
   </div>`;
 }
 
@@ -2217,10 +2324,11 @@ function Shell() {
   // Starts the PunchTrack walkthrough for a house. Never automatic — only from
   // the Start walkthrough button. Carries the house's closing date across so the
   // trade-report deadline and the visit rule work from day one.
-  const createPunch = async (h) => {
+  // `phase` is 'prewalk' or blank (blank = walkthrough, as PunchTrack stores it).
+  const createPunch = async (h, phase) => {
     const job = { slug: slugify(h.address) + '-' + newId().slice(0, 4), address: h.address, closingDate: h.milestones.closing || '',
-      createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString() };
-    await withRetry(() => punchPost('createJob', { job }));
+      createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString(), phase: phase === 'prewalk' ? 'prewalk' : '' };
+    await withRetry(() => punchPost('createJob', { job, phase: job.phase }));
     punch.setJobs(js => [{ ...job, archived: '', lastVisit: '', total: 0, done: 0, open: 0 }, ...js]);
   };
 
@@ -2260,7 +2368,7 @@ function Shell() {
       : html`<${StartScope} address=${h.address} loading=${scope.loading} onStart=${() => createJob(h.address)} />`;
     const punchEl = pj
       ? html`<${PunchJobScreen} key=${pj.slug} slug=${pj.slug} embedded onChange=${punch.updateSummary} />`
-      : html`<${StartPunch} house=${h} loading=${punch.loading} onStart=${() => createPunch(h)} />`;
+      : html`<${StartPunch} house=${h} loading=${punch.loading} onStart=${phase => createPunch(h, phase)} />`;
     return html`<div className=${'app' + ((view === 'scope' && sj) || (view === 'punch' && pj) ? ' has-actions' : '')}>
       <${Header} left=${html`<${BackLink} label=${TAB_LABELS[tab]} onClick=${back} />`}
         right=${html`<${SyncBadge} sync=${sync} loading=${loading} updatedAt=${updatedAt} compact /><span className="hdr-meta">${h.subdivision || ''}</span>`} />
