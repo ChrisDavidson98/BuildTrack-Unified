@@ -1112,7 +1112,6 @@ function PtRolloverSheet({ job, items, busy, error, onConfirm, onClose }) {
             onClick=${() => setChoice(c => ({ ...c, [it.id]: v }))}>${label}</button>`)}
         </div>
       </div>`)}
-      <div className="cap">There is no way back to pre-walk from the app yet.</div>
       ${error && html`<${Notice}>${error}<//>`}
       <div className="btn-row">
         <button className="btn btn-secondary btn-lg" disabled=${busy} onClick=${onClose}>Cancel</button>
@@ -1269,6 +1268,20 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       setError(`Couldn't begin the walkthrough (${e.message}).`);
     } finally { setRolling(false); }
   };
+  // The way back, for a walkthrough begun by mistake (PunchTrack's backToPrewalk).
+  // Closed items stay closed, carry marks clear, items logged since become pre-walk.
+  const backToPrewalk = async () => {
+    if (!freshRef.current) return;
+    setError(null); setRolling(true);
+    try {
+      await withRetry(() => punchPost('backToPrewalk', { slug }));
+      await load();
+      setSheet(null);
+    } catch (e) {
+      await load();
+      setError(`Couldn't go back to pre-walk (${e.message}).`);
+    } finally { setRolling(false); }
+  };
   const ship = async assignee => {
     if (!freshRef.current) return;
     setError(null);
@@ -1326,6 +1339,9 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   open.filter(it => !ptIsPrieb(it.assignee)).forEach(it => { (trades[it.assignee] = trades[it.assignee] || []).push(it); });
   const prewalk = ptPhase(job) === 'prewalk';
   const countsLine = ptCountsLine(ptPhaseCounts(items));
+  // Only a house that was actually rolled over can go back (same guard as the backend).
+  const canGoBack = !prewalk && !!job.walkthroughStartedAt;
+  const walkthroughItems = items.filter(it => ptPhase(it) !== 'prewalk').length;
   const rolloverItems = items.filter(it => ptPhase(it) === 'prewalk' && it.status !== 'completed');
   const sheetItem = sheet && sheet.item ? items.find(it => it.id === sheet.item) : null;
   const rows = list => html`<div className="card">${list.map(it => html`<${PtItemRow} key=${it.id} it=${it} trail=${trail(it.id)} onOpen=${id => fresh && setSheet({ item: id })} onComplete=${complete} />`)}</div>`;
@@ -1374,6 +1390,7 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
         ${rows(list)}</section>`)}
       ${completed.length > 0 && html`<section><div className="section-head"><span className="label">Completed</span><span className="hint">${completed.length}</span></div>${rows(completed)}</section>`}
       ${!job.archived && html`<div className="btn-row no-print">
+        ${canGoBack && html`<button className="btn btn-secondary" disabled=${!fresh} onClick=${() => { setError(null); setSheet('back'); }}>Back to pre-walk</button>`}
         <button className="btn btn-secondary" disabled=${!fresh} onClick=${() => { setError(null); setSheet('archive'); }}>Archive walkthrough</button></div>`}
     </div>
     <div className="actionbar no-print pt"><div className="actionbar-in">
@@ -1392,6 +1409,15 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       onSave=${saveEdit} onComplete=${complete} onReopen=${reopen} onResolve=${resolve} />`}
     ${sheet && sheet.report && html`<${PtReportSheet} job=${job} assignee=${sheet.report} items=${trades[sheet.report] || []}
       onShip=${ship} onClose=${() => setSheet(null)} />`}
+    ${sheet === 'back' && html`<${Sheet} title="Back to pre-walk?" onClose=${() => setSheet(null)}>
+      <div className="stack" style=${{ gap: 14 }}>
+        <div className="cap">${job.address}</div>
+        <div className="cap">For a walkthrough begun by mistake. Items you marked Fixed or Drop stay closed. Carried items become plain open pre-walk items again.${walkthroughItems ? ` The ${walkthroughItems} item${walkthroughItems === 1 ? '' : 's'} logged since the walkthrough began become${walkthroughItems === 1 ? 's a pre-walk item' : ' pre-walk items'}.` : ''}</div>
+        ${error && html`<${Notice}>${error}<//>`}
+        <div className="btn-row"><button className="btn btn-secondary btn-lg" disabled=${rolling} onClick=${() => setSheet(null)}>Cancel</button>
+          <button className="btn btn-primary btn-lg" disabled=${rolling} onClick=${backToPrewalk}>${rolling && html`<${I.loader} size=${16} className="spin" />`}Back to pre-walk</button></div>
+      </div>
+    <//>`}
     ${sheet === 'archive' && html`<${Sheet} title="Archive this walkthrough?" onClose=${() => setSheet(null)}>
       <div className="stack" style=${{ gap: 14 }}>
         <div className="cap">${job.address}</div>
@@ -2328,7 +2354,7 @@ function Shell() {
   const createPunch = async (h, phase) => {
     const job = { slug: slugify(h.address) + '-' + newId().slice(0, 4), address: h.address, closingDate: h.milestones.closing || '',
       createdAt: new Date().toISOString(), lastUpdated: new Date().toISOString(), phase: phase === 'prewalk' ? 'prewalk' : '' };
-    await withRetry(() => punchPost('createJob', { job, phase: job.phase }));
+    await withRetry(() => punchPost('createJob', { job }));
     punch.setJobs(js => [{ ...job, archived: '', lastVisit: '', total: 0, done: 0, open: 0 }, ...js]);
   };
 

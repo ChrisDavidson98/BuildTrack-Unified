@@ -201,9 +201,12 @@ PunchTrack lives in this repo's `.gs` files.
     "missed" stat, categories or ask bar — Chris cut these on purpose.
   - `.md` export splits into Pre-walk / Walkthrough sections only when the house
     has pre-walk items; otherwise the original format is unchanged.
+  - **Back to pre-walk** (bottom of the punch screen, only on a job that was rolled
+    over) → PunchTrack's `backToPrewalk`. Chris's rules: Fixed/Dropped items stay
+    closed, Carry marks clear, items logged since the walkthrough began become
+    pre-walk items.
   - Not built: amber "walkthrough soon, pre-walk still open" flag (Chris: out for
-    now; `houseFact` untouched), and a way back to pre-walk after Begin walkthrough
-    (Chris wants one — needs a new PunchTrack backend action first).
+    now; `houseFact` untouched).
 - PunchTrack's standalone page stays live for a trial period (both hit the same
   sheet), then gets retired. The Punch tab links to it as "Old PunchTrack".
 
