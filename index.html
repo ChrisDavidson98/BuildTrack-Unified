@@ -224,7 +224,7 @@ button.chk::before { content: ""; position: absolute; inset: -12px; } /* 44px ta
 
 /* ── KPI tiles ── */
 .kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.kpi { border: 1px solid var(--border); border-radius: var(--radius-tile); padding: 12px; min-width: 0; }
+.kpi { border: 1px solid var(--border); border-radius: var(--radius-tile); padding: 12px; min-width: 0; display: block; width: 100%; text-align: left; color: inherit; font: inherit; }
 .kpi-label { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi-value { font-family: var(--font-mono); font-size: 24px; line-height: 1.2; margin: 4px 0 2px; }
 .kpi-sub { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -524,13 +524,13 @@ function Ring({ pct, attn, label }) {
 }
 const scopePct = sj => !sj ? null : !hasCounts(sj) ? null : sj.total === 0 ? 0 : sj.done / sj.total;
 
-function KpiTile({ label, value, sub, attn }) {
-  return html`<div className="kpi"><div className="kpi-label">${label}</div><div className="kpi-value">${value}</div>
-    <div className=${'kpi-sub' + (attn ? ' attn-text' : '')}>${sub}</div></div>`;
+function KpiTile({ label, value, sub, attn, onClick }) {
+  return html`<button className="kpi" onClick=${onClick} aria-label=${`${label}: ${value}. ${sub}. Open`}><div className="kpi-label">${label}</div><div className="kpi-value">${value}</div>
+    <div className=${'kpi-sub' + (attn ? ' attn-text' : '')}>${sub}</div></button>`;
 }
 
 // ── Today ────────────────────────────────────────────────────────
-function TodayScreen({ houses, jobs, punchJobs, onOpen }) {
+function TodayScreen({ houses, jobs, punchJobs, onOpen, onGo }) {
   const list = sortByClosing(houses);
   const date = new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   const sjs = list.map(h => jobForHouse(h, jobs));
@@ -548,9 +548,9 @@ function TodayScreen({ houses, jobs, punchJobs, onOpen }) {
   return html`<div className="page stack">
     <div><div className="cap">${date}</div><h1 className="title">${list.length} active home${list.length === 1 ? '' : 's'}</h1></div>
     <div className="kpis">
-      <${KpiTile} label="Scope open" value=${countsKnown ? open : '—'} sub=${!countsKnown ? 'Counts pending' : unsent > 0 ? `${unsent} unsent` : 'All sent'} attn=${unsent > 0} />
-      <${KpiTile} label="Punch open" value=${punchKnown ? punchOpen : '—'} sub=${!punchKnown ? 'Counts pending' : needVisit > 0 ? `${needVisit} need a visit` : 'All checked'} attn=${needVisit > 0} />
-      <${KpiTile} label="Closing ≤14d" value=${closingSoon.length} sub=${next ? `next ${nextDay}` : 'None soon'} />
+      <${KpiTile} label="Scope open" value=${countsKnown ? open : '—'} sub=${!countsKnown ? 'Counts pending' : unsent > 0 ? `${unsent} unsent` : 'All sent'} attn=${unsent > 0} onClick=${() => onGo('scope')} />
+      <${KpiTile} label="Punch open" value=${punchKnown ? punchOpen : '—'} sub=${!punchKnown ? 'Counts pending' : needVisit > 0 ? `${needVisit} need a visit` : 'All checked'} attn=${needVisit > 0} onClick=${() => onGo('punch')} />
+      <${KpiTile} label="Closing ≤14d" value=${closingSoon.length} sub=${next ? `next ${nextDay}` : 'None soon'} onClick=${() => onGo('closing')} />
     </div>
     <div>
       <div className="section-head"><span className="label">Houses</span><span className="hint">MLS · Scope · Punch</span></div>
@@ -2431,7 +2431,8 @@ function Shell() {
 
   return html`<div className="app has-tabs">
     <${Header} left=${html`<${Logo} />`} right=${html`${syncBadge}${tab === 'today' && html`<button className="icon-btn" aria-label="Search houses" onClick=${() => setShowSearch(true)}><${I.search} size=${20} /></button>`}`} />
-    ${tab === 'today'   && html`<${TodayScreen} houses=${active} jobs=${scope.jobs} punchJobs=${punch.jobs} onOpen=${openHouse} />`}
+    ${tab === 'today'   && html`<${TodayScreen} houses=${active} jobs=${scope.jobs} punchJobs=${punch.jobs} onOpen=${openHouse}
+      onGo=${to => { if (to === 'closing') { setHouseFilter('closing'); setTab('houses'); } else setTab(to); window.scrollTo(0, 0); }} />`}
     ${tab === 'houses'  && html`<${HousesScreen} houses=${houses} filter=${houseFilter} setFilter=${setHouseFilter} sortBy=${sortBy} setSortBy=${setSortBy}
                               onOpen=${openHouse} onAdd=${() => setShowAdd(true)} onRestore=${id => upH(id, { archived: false })} />`}
     ${tab === 'scope'   && html`<${ScopeListScreen} jobs=${scope.jobs} loading=${scope.loading} failed=${scope.failed}
