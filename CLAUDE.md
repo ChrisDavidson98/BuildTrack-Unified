@@ -179,6 +179,10 @@ PunchTrack lives in this repo's `.gs` files.
   flagged items resolve (never complete), visits/"last checked" overdue rule in
   workdays (`ptVisitStatus`), trade report deadline = 2 workdays before closing.
 - The overdue badge never reorders anything; `houseFact` is unchanged.
+- Archive / Restore a walkthrough from its Punch tab (`setArchived` → PunchTrack's
+  `archiveJob`, 2026-10-13). Deliberately **separate** from archiving the house:
+  archiving a house in BuildTrack never touches its punch list, and vice versa
+  (Chris's call — linking them is a "maybe later").
 - PunchTrack's standalone page stays live for a trial period (both hit the same
   sheet), then gets retired. The Punch tab links to it as "Old PunchTrack".
 

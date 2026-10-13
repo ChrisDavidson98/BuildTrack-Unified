@@ -1101,7 +1101,8 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [error, setError] = useState(null);
-  const [sheet, setSheet] = useState(null); // null | 'dictate' | 'review' | {item} | {report}
+  const [sheet, setSheet] = useState(null); // null | 'dictate' | 'review' | 'archive' | {item} | {report}
+  const [archiving, setArchiving] = useState(false);
   const [dictation, setDictation] = useState('');
   const [processing, setProcessing] = useState(false);
   const [pending, setPending] = useState([]);
@@ -1162,6 +1163,19 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
     if (!freshRef.current) return;
     setError(null); visitLocal();
     try { await withRetry(() => punchPost('checkIn', { slug })); } catch (e) { setError(`Couldn't log the visit (${e.message}).`); }
+  };
+  // Archive is not delete: PunchTrack stamps the Jobs row and keeps every item.
+  // Waits for the backend (no optimistic flip) so the list never shows a house
+  // as archived when the write didn't land. Separate from archiving the house.
+  const setArchived = async archived => {
+    if (!freshRef.current) return;
+    setError(null); setArchiving(true);
+    try {
+      const r = await withRetry(() => punchPost('archiveJob', { slug, archived }));
+      setJob(j => j && { ...j, archived: archived ? (r && r.archived) || new Date().toISOString() : '' });
+      setSheet(null);
+    } catch (e) { setError(`Couldn't ${archived ? 'archive' : 'restore'} this walkthrough (${e.message}).`); }
+    finally { setArchiving(false); }
   };
   const ship = async assignee => {
     if (!freshRef.current) return;
@@ -1233,6 +1247,11 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
           <div className=${'row-meta' + (vs.overdue ? ' attn' : '')}>${vs.overdue ? 'Needs a visit' : job.closingDate ? `Closing ${fmtShort(ptDay(job.closingDate))}` : 'No closing date in PunchTrack'}</div></div>
         <button className="btn btn-secondary btn-sm" disabled=${!fresh || vs.last === ptToday()} onClick=${checkIn}><${I.check} size=${14} />Checked today</button>
       </div></div>`}
+      ${job.archived && html`<div className="card no-print"><div className="row">
+        <div className="grow"><div className="row-title sm">Archived</div>
+          <div className="row-meta">Off the Punch list and helper lists. Every item is kept.</div></div>
+        <button className="btn btn-secondary btn-sm" disabled=${!fresh || archiving} onClick=${() => setArchived(false)}>${archiving && html`<${I.loader} size=${14} className="spin" />`}Restore</button>
+      </div></div>`}
       <div className="chips">
         <span className=${'chip' + (flagged.length ? ' attn' : '')}>${open.length + flagged.length + mine.length} open</span>
         <span className="chip">${completed.length} done</span>
@@ -1251,6 +1270,8 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
           <button className="btn btn-secondary btn-sm" disabled=${!fresh} onClick=${() => setSheet({ report: who })}>${list.every(it => it.status === 'sent') ? 'Sent · report' : 'Report'}</button></div>
         ${rows(list)}</section>`)}
       ${completed.length > 0 && html`<section><div className="section-head"><span className="label">Completed</span><span className="hint">${completed.length}</span></div>${rows(completed)}</section>`}
+      ${!job.archived && html`<div className="btn-row no-print">
+        <button className="btn btn-secondary" disabled=${!fresh} onClick=${() => { setError(null); setSheet('archive'); }}>Archive walkthrough</button></div>`}
     </div>
     <div className="actionbar no-print pt"><div className="actionbar-in">
       <button className="btn btn-secondary btn-lg" disabled=${!items.length} onClick=${() => ptDownloadMarkdown(job)}><${I.external} size=${16} />Export .md</button>
@@ -1266,6 +1287,16 @@ function PunchJobScreen({ slug, embedded, backLabel, onBack, onChange }) {
       onSave=${saveEdit} onComplete=${complete} onReopen=${reopen} onResolve=${resolve} />`}
     ${sheet && sheet.report && html`<${PtReportSheet} job=${job} assignee=${sheet.report} items=${trades[sheet.report] || []}
       onShip=${ship} onClose=${() => setSheet(null)} />`}
+    ${sheet === 'archive' && html`<${Sheet} title="Archive this walkthrough?" onClose=${() => setSheet(null)}>
+      <div className="stack" style=${{ gap: 14 }}>
+        <div className="cap">${job.address}</div>
+        <div className="cap">It drops off the Punch list and helper lists. Every item is kept, and you can restore it later. The house itself is not archived.</div>
+        ${open.length + flagged.length + mine.length > 0 && html`<${Notice}>${open.length + flagged.length + mine.length} item${open.length + flagged.length + mine.length === 1 ? '' : 's'} still open<//>`}
+        ${error && html`<${Notice}>${error}<//>`}
+        <div className="btn-row"><button className="btn btn-secondary btn-lg" onClick=${() => setSheet(null)}>Cancel</button>
+          <button className="btn btn-danger btn-lg" disabled=${archiving} onClick=${() => setArchived(true)}>${archiving && html`<${I.loader} size=${16} className="spin" />`}Archive</button></div>
+      </div>
+    <//>`}
   <//>`;
 }
 
