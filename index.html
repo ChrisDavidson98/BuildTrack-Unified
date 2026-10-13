@@ -30,6 +30,10 @@
   --attn:        #f5b544;
   --attn-wash:   rgba(245,181,68,0.12);
   --attn-border: rgba(245,181,68,0.35);
+  /* softer amber for tappable "ready" controls (bonus Claim) — same meaning, less glow */
+  --attn-soft:        #f3cd8a;
+  --attn-soft-wash:   rgba(245,181,68,0.05);
+  --attn-soft-border: rgba(245,181,68,0.22);
   --done:        #5fbf8a;
   --danger:      #f87171;
 
@@ -154,6 +158,7 @@ button.chip.on { border-color: var(--text); color: var(--text); }
 .btn-primary { background: var(--primary-bg); color: var(--primary-fg); }
 .btn-secondary { border: 1px solid var(--border-strong); color: var(--text); }
 .btn-danger { border: 1px solid var(--danger); color: var(--danger); }
+.btn-attn { background: var(--attn-soft-wash); border: 1px solid var(--attn-soft-border); color: var(--attn-soft); }
 .btn-sm { min-height: var(--tap); padding: 0 12px; font-size: 13px; }
 .icon-btn { width: var(--tap); height: var(--tap); display: inline-grid; place-items: center; color: var(--text-3); border-radius: var(--radius-btn); flex-shrink: 0; }
 .icon-btn:active { background: var(--border); }
@@ -199,8 +204,12 @@ button.chk::before { content: ""; position: absolute; inset: -12px; } /* 44px ta
 .bon { min-height: var(--tap); border-radius: 8px; border: 1px solid var(--border-strong); display: flex; flex-direction: column; align-items: center; justify-content: center;
   font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-3); gap: 1px; }
 .bon small { font-size: 10px; color: var(--text-4); letter-spacing: 0; }
-.bon.on { background: var(--text); border-color: var(--text); color: var(--bg); }
-.bon.on small { color: var(--bg); opacity: 0.7; }
+/* Three states, loudest = the one that needs a tap: ready to claim (amber),
+   claimed (quiet, done), not yet earned (dim). */
+.bon.claim { background: var(--attn-soft-wash); border-color: var(--attn-soft-border); color: var(--attn-soft); }
+.bon.claim small { color: var(--attn-soft); }
+.bon.on { background: var(--surface); color: var(--text-2); }
+.bon.on small { color: var(--done); display: inline-flex; align-items: center; gap: 3px; }
 .bon.na { border-color: var(--border); color: var(--text-5); }
 .bon.na small { color: var(--text-5); }
 
@@ -725,13 +734,15 @@ function HouseScreen({ house: h, onUpdate, onUpdateHouse, onToggleBonus, onArchi
       <div className="card">
         ${appl.map(b => {
           const el = eligible(h, b), cl = h.bonuses[b.key];
-          const note = b.milestoneKey && h.milestones[b.milestoneKey] ? `Milestone ${fmtDate(h.milestones[b.milestoneKey])}`
+          const md = b.milestoneKey && h.milestones[b.milestoneKey] ? `Milestone ${fmtDate(h.milestones[b.milestoneKey])}` : '';
+          const note = el && !cl ? ['Ready to claim', md].filter(Boolean).join(' · ')
+            : md ? (el ? md : `${md} · unlocks once that date passes`)
             : !el && !b.requiresBasement ? 'Set milestone date to unlock'
             : !el && b.requiresBasement ? (h.milestones.closing ? 'Unlocks once closing date passes' : 'Set closing date to unlock') : '';
           return html`<div key=${b.key} className="row">
             <div className="grow"><div className="row-title sm">${b.label}</div>${note && html`<div className=${'row-meta' + (el && !cl ? ' attn' : '')}>${note}</div>`}</div>
-            <button className=${'btn btn-sm ' + (cl ? 'btn-primary' : 'btn-secondary')} disabled=${!el} onClick=${() => el && onToggleBonus(b.key)}>
-              ${cl && html`<${I.check} size=${14} />`}${cl ? 'Claimed' : 'Claim'}</button>
+            <button className=${'btn btn-sm ' + (cl ? 'btn-secondary' : el ? 'btn-attn' : 'btn-secondary')} disabled=${!el} onClick=${() => el && onToggleBonus(b.key)}>
+              ${cl && html`<${I.check} size=${14} />`}${cl ? 'Claimed' : el ? 'Claim' : 'Not yet'}</button>
           </div>`;
         })}
       </div>
@@ -769,19 +780,21 @@ function BonusesScreen({ houses, onOpen, onToggleBonus }) {
   const list = [...houses].sort((a, b) => owedCount(b) - owedCount(a));
   const total = houses.reduce((s, h) => s + owedCount(h), 0);
   return html`<div className="page stack">
-    <div><div className=${'cap' + (total > 0 ? ' attn-text' : '')}>${total} unclaimed</div><h1 className="title">Bonuses</h1></div>
+    <div><div className=${'cap' + (total > 0 ? ' attn-text' : '')}>${total} ready to claim</div><h1 className="title">Bonuses</h1></div>
     ${list.length === 0 ? html`<${Empty} text="No bonuses to track yet. Add milestone dates to unlock." />` : html`<div className="card">
       ${list.map(h => html`<div key=${h.id} className="row" style=${{ flexDirection: 'column', alignItems: 'stretch', gap: 0 }}>
         <div className="tap" style=${{ cursor: 'pointer' }} onClick=${() => onOpen(h.id)}>
           <div className="row-title">${h.address}</div>${subLine(h) && html`<div className="row-meta">${subLine(h)}</div>`}
+          ${owedCount(h) > 0 && html`<div className="row-meta attn">${owedCount(h)} ready to claim</div>`}
         </div>
         <div className="bon-grid">
           ${BONUS_DEFS.map(b => {
             if (!bonusFor(h).find(x => x.key === b.key)) return html`<div key=${b.key} className="bon na" aria-label=${b.label + ': not applicable'}>${b.abbr}<small>—</small></div>`;
             const el = eligible(h, b), cl = h.bonuses[b.key];
             const md = b.milestoneKey ? h.milestones[b.milestoneKey] : null;
-            return html`<button key=${b.key} className=${'bon' + (cl ? ' on' : !el ? ' na' : '')} disabled=${!el} aria-pressed=${!!cl} aria-label=${b.label}
-              onClick=${() => el && onToggleBonus(h.id, b.key)}>${b.abbr}<small>${md ? fmtShort(md) : 'pending'}</small></button>`;
+            const state = cl ? 'claimed' : el ? 'ready to claim' : 'not yet earned';
+            return html`<button key=${b.key} className=${'bon' + (cl ? ' on' : el ? ' claim' : ' na')} disabled=${!el} aria-pressed=${!!cl} aria-label=${`${b.label}: ${state}`}
+              onClick=${() => el && onToggleBonus(h.id, b.key)}>${b.abbr}<small>${cl ? html`<${I.check} size=${10} strokeWidth=${3} />Claimed` : el ? 'Claim' : md ? fmtShort(md) : 'no date'}</small></button>`;
           })}
         </div>
       </div>`)}
